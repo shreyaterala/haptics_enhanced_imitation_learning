@@ -11,6 +11,7 @@ cd src/dvrk/dvrk_config_jhu/jhu-dVRK
 ros2 run dvrk_robot dvrk_system -j system-MTMR-PSM2-bilateral-teleop.json -m manager-MTMR-PSM2-bilateral-ros.json -K -C -p 0.001 -e IRE_IPYTHON
 run study_gui.py
 ```
+
 ## Force Sensor
 Follow the setup instructions from [the sawATIForceSensor repository](https://github.com/jhu-saw/sawATIForceSensor)
 
