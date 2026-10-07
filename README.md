@@ -48,10 +48,10 @@ cd ~/ros2_ws
 source install/setup.bash 
 ros2 run ati_ft ati_ft -i 192.168.1.1
 ```
-	* re-bias the sensor at startup
+* re-bias the sensor at startup
 
 3. start teleop/bilateral teleop
-	• Starting teleop
+• Starting teleop
 ```
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
@@ -59,7 +59,7 @@ source install/setup.bash
 cd src/dvrk/dvrk_config_jhu/jhu-dVRK
 ros2 run dvrk_robot dvrk_system -j ~/ros2_ws/src/dvrk/dvrk_config_jhu/jhu-dVRK/system-MTML-MTMR-PSM1-PSM2-Teleop.json
 ```
-	• Starting bilateral teleop
+• Starting bilateral teleop
 ```
   cd ~/ros2_ws
   source /opt/ros/jazzy/setup.bash
@@ -70,7 +70,7 @@ ros2 run dvrk_robot dvrk_system -j ~/ros2_ws/src/dvrk/dvrk_config_jhu/jhu-dVRK/s
 ```
 
 4. start data collection code
-	Terminal 1:
+Terminal 1:
 ```
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
@@ -78,7 +78,7 @@ source install/setup.bash
 cd src/dvrk/dvrk_config_jhu/jhu-dVRK/sdi
 ros2 launch dvrk_console stereo_video_pipeline.launch.py config_dir:=share/config
 ```
-	Terminal 2:
+Terminal 2:
 ```
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
@@ -86,7 +86,7 @@ source install/setup.bash
 cd src/dvrk
 ros2 run dvrk_data record -c dvrk_data/dvrk_configs/record.json
 ```
-	Terminal 3:
+Terminal 3:
 ```
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
