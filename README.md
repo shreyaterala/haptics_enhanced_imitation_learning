@@ -15,28 +15,29 @@ run study_gui.py
 Follow the setup instructions from [the sawATIForceSensor repository](https://github.com/jhu-saw/sawATIForceSensor)
 
 ## Data Collection
-ROS topics being collected:
-Action Space
-* /PSM2/measured_js – measured joint position, velocity, and effort (only use position & velocity)
-* /PSM2/jaw/measured_js – measured jaw position, velocity, and effort (only use position & velocity)
-State Space
-* /PSM2/setpoint_js – commanded joint position, velocity, and effort (only use position & velocity)
-* /PSM2/jaw/setpoint_js – commanded jaw position, velocity, and effort (only use position & velocity)
-PSM Force Topics
-* /PSM2/spatial/measured_cf - spatial measured force/torque
-* /PSM2/body/measured_cf - body measured force/torque
-* /PSM2/gravity_compensation/setpoint_js – commanded gravity compensation
-	* used as joint_force = arm_effort – gravity_compensation
-	* arm_effort = joint effort from measured_js
-External Force Topics
-* /measured_cf - Cartesian force (x, y, z) | 3 | ATI NetFT
-Wrist Cameras
-* /wrist/cam1/image_raw – wrist camera 1
-* /wrist/cam2/image_raw – wrist camera 2
-Stereo Endoscope
-* /console1/right/image_raw
-* /console1/left/image_raw
+### ROS topics being collected
+* Action Space
+  * /PSM2/measured_js – measured joint position, velocity, and effort (only use position & velocity)
+  * /PSM2/jaw/measured_js – measured jaw position, velocity, and effort (only use position & velocity)
+* State Space
+  * /PSM2/setpoint_js – commanded joint position, velocity, and effort (only use position & velocity)
+  * /PSM2/jaw/setpoint_js – commanded jaw position, velocity, and effort (only use position & velocity)
+* PSM Force Topics
+  * /PSM2/spatial/measured_cf - spatial measured force/torque
+  * /PSM2/body/measured_cf - body measured force/torque
+  * /PSM2/gravity_compensation/setpoint_js – commanded gravity compensation
+    * used as joint_force = arm_effort – gravity_compensation
+    * arm_effort = joint effort from measured_js
+* External Force Topics
+  * /measured_cf - Cartesian force (x, y, z) | 3 | ATI NetFT
+* Wrist Cameras
+  * /wrist/cam1/image_raw – wrist camera 1
+  * /wrist/cam2/image_raw – wrist camera 2
+* Stereo Endoscope
+  * /console1/right/image_raw
+  * /console1/left/image_raw
 
+### Data collection instructions
 1. start publishing wrist camera topics
  ```
 source dvrk_venv/bin/activate
