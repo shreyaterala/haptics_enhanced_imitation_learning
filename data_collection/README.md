@@ -38,33 +38,32 @@ Follow the setup instructions from [the sawATIForceSensor repository](https://gi
   * /console1/left/image_raw
 
 ### Data collection instructions
-1. start publishing wrist camera topics
+1. start publishing stereo camera topics 
+```
+source /opt/ros/jazzy/setup.bash 
+cd ~/ros2_ws  
+source install/setup.bash 
+ros2 launch dvrk_video decklink_stereo_goovis.launch.py stereo_rig_name:=console1 
+```
+
+2. start publishing wrist camera topics
  ```
 source dvrk_venv/bin/activate
 source /opt/ros/jazzy/setup.bash
-cd ~/cis2_haptics/CIS2_Haptics_Enhanced_Imitation_Learning/act_dvrk
+cd ~/haptics_enhanced_imitation_learning/data_collection
 python wrist_cameras_video.py
 ```
 
-2. start publishing force sensor topic
+3. start publishing force sensor topic
 ```
 source /opt/ros/jazzy/setup.bash
 cd ~/ros2_ws  
 source install/setup.bash 
-ros2 run ati_ft ati_ft -i 192.168.1.1
+ros2 run ati_ft ati_ft -i 192.168.1.1 -r 0.001
 ```
 * re-bias the sensor at startup
 
-3. start teleop/bilateral teleop
-* Starting teleop
-```
-cd ~/ros2_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-cd src/dvrk/dvrk_config_jhu/jhu-dVRK
-ros2 run dvrk_robot dvrk_system -j ~/ros2_ws/src/dvrk/dvrk_config_jhu/jhu-dVRK/system-MTML-MTMR-PSM1-PSM2-Teleop.json
-```
-* Starting bilateral teleop
+4. start teleop/bilateral teleop
 ```
   cd ~/ros2_ws
   source /opt/ros/jazzy/setup.bash
@@ -74,30 +73,13 @@ ros2 run dvrk_robot dvrk_system -j ~/ros2_ws/src/dvrk/dvrk_config_jhu/jhu-dVRK/s
   run study_gui.py
 ```
 
-4. start endoscope and viewing software
-* Terminal 1:
-```
-cd ~/ros2_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-cd src/dvrk/dvrk_config_jhu/jhu-dVRK/sdi
-ros2 launch dvrk_console stereo_video_pipeline.launch.py config_dir:=share/config
-```
-* Terminal 2:
-```
-cd ~/ros2_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 run dvrk_console control_panel
-```
-
 5. start data collection
 * **Option A: PyQt Graphical Interface (Recommended)**
 ```bash
 source dvrk_venv/bin/activate
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
-cd ~/cis2_haptics/CIS2_Haptics_Enhanced_Imitation_Learning/data_collection
+cd ~/haptics_enhanced_imitation_learning/data_collection
 python record_gui.py
 ```
 *You can also launch the GUI via `python record_dvrk_episodes.py --gui`.*
@@ -107,7 +89,7 @@ python record_gui.py
 source dvrk_venv/bin/activate
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
-cd ~/cis2_haptics/CIS2_Haptics_Enhanced_Imitation_Learning/data_collection
-python record_dvrk_episodes.py --no-gui --psm PSM2 --fps 100 --image_fps 20 --seconds_per_episode 15
+cd ~/haptics_enhanced_imitation_learning/data_collection
+python record_dvrk_episodes.py --no-gui --psm PSM2 --fps 1000 --image_fps 20 --seconds_per_episode 10
 ```
 Press `q` to start recording a trial. Once the trial finishes, the script will show the capture statistics and prompt you to `Save episode_XXX? [Y/n]` or discard it.

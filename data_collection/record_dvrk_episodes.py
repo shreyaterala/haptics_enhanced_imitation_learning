@@ -237,6 +237,38 @@ def find_latest_before_or_closest(timestamps, data_list, target_t, tolerance=Non
     return find_closest_sample(timestamps, data_list, target_t, tolerance)
 
 
+def find_interpolated_sample(timestamps, data_list, target_t, tolerance,
+                             max_interpolation_gap, matcher=None):
+    """Use a nearby sample or linearly interpolate between close bracketing samples."""
+    sample_matcher = matcher or find_closest_sample
+    sample_time, sample = sample_matcher(timestamps, data_list, target_t, tolerance)
+    if sample is not None:
+        return sample_time, sample
+
+    idx = bisect_left(timestamps, target_t)
+    if idx == 0 or idx >= len(timestamps):
+        return None, None
+
+    left_time = timestamps[idx - 1]
+    right_time = timestamps[idx]
+    gap = right_time - left_time
+    if gap <= 0.0 or gap > max_interpolation_gap:
+        return None, None
+
+    fraction = (target_t - left_time) / gap
+    left_value = data_list[idx - 1]
+    right_value = data_list[idx]
+    if isinstance(left_value, tuple):
+        interpolated = tuple(
+            (1.0 - fraction) * np.asarray(left) + fraction * np.asarray(right)
+            for left, right in zip(left_value, right_value)
+        )
+    else:
+        interpolated = (1.0 - fraction) * np.asarray(left_value) + fraction * np.asarray(right_value)
+    source_time = left_time if fraction <= 0.5 else right_time
+    return float(source_time), interpolated
+
+
 # ============================================================
 # High-Speed ROS 2 Intake Node
 # ============================================================
@@ -276,6 +308,9 @@ class DVRKRecorder(Node):
 
         # Latest preview image for GUI
         self.latest_preview_img = None
+        self.latest_wrist_preview_img = None
+        self.latest_wrist_preview_name = None
+        self.latest_wrist_preview_time = 0.0
         self.preview_lock = threading.Lock()
 
         # Recording session management
@@ -351,7 +386,8 @@ class DVRKRecorder(Node):
                 self.topic_stats[topic] = {'count': 0, 'last_ts': 0.0, 'rate_hz': 0.0}
                 self._rate_trackers[topic] = deque(maxlen=40)
 
-    def update_configuration(self, psm="PSM2", wrist_cameras=None, left_topic=None, right_topic=None):
+    def update_configuration(self, psm="PSM2", wrist_cameras=None, left_topic=None, right_topic=None,
+                             wrist1_topic=None, wrist2_topic=None):
         """Update PSM or camera subscriptions dynamically."""
         self.psm = psm
         if wrist_cameras is not None:
@@ -361,6 +397,8 @@ class DVRKRecorder(Node):
             wrist_cameras=self.wrist_cameras,
             left_topic=left_topic or self.topic_names.get("left_topic"),
             right_topic=right_topic or self.topic_names.get("right_topic"),
+            wrist1_topic=wrist1_topic or self.topic_names.get("wrist1_topic"),
+            wrist2_topic=wrist2_topic or self.topic_names.get("wrist2_topic"),
         )
         self._init_subscriptions()
 
@@ -496,9 +534,14 @@ class DVRKRecorder(Node):
             except Exception:
                 pass
 
-        if stream_name == "left" and cv_img is not None:
+        if cv_img is not None and stream_name in ("left", "wrist_1", "wrist_2"):
             with self.preview_lock:
-                self.latest_preview_img = cv_img
+                if stream_name == "left":
+                    self.latest_preview_img = cv_img
+                else:
+                    self.latest_wrist_preview_img = cv_img
+                    self.latest_wrist_preview_name = stream_name
+                    self.latest_wrist_preview_time = time.monotonic()
 
         if self.is_recording and cv_img is not None:
             ts = msg_time_to_sec(msg)
@@ -517,14 +560,16 @@ class DVRKRecorder(Node):
 def synchronize_trial_data(trial_buffers,
                            fps=100.0,
                            image_fps=20.0,
-                           state_tolerance=0.03,
+                           state_tolerance=0.002,
                            image_tolerance=0.08,
-                           command_tolerance=0.05,
+                           command_tolerance=0.002,
                            requested_seconds=None,
                            resize=None,
                            command_mode='latest_before_or_nearest',
                            wrist_cameras=None,
-                           wall_start_time=None):
+                           wall_start_time=None,
+                           camera_names=None,
+                           max_interpolation_gap=0.03):
     """
     Matches the closest timesteps of all topics together at the specified frequency (fps),
     extracting state, commands, force/torque, and camera frames into synchronized arrays.
@@ -606,9 +651,23 @@ def synchronize_trial_data(trial_buffers,
     measured_cf_list = []
     joint_force_list = []
 
-    cam_names = ["left", "right"]
-    if "cam1" in wrist_cameras: cam_names.append("wrist_1")
-    if "cam2" in wrist_cameras: cam_names.append("wrist_2")
+    if camera_names is None:
+        cam_names = ["left", "right"]
+        if "cam1" in wrist_cameras: cam_names.append("wrist_1")
+        if "cam2" in wrist_cameras: cam_names.append("wrist_2")
+    else:
+        selected_cameras = set(camera_names)
+        cam_names = [name for name in ("left", "right", "wrist_1", "wrist_2")
+                     if name in selected_cameras]
+    if not cam_names:
+        return None
+
+    camera_samples = {
+        "left": (left_times, left_vals),
+        "right": (right_times, right_vals),
+        "wrist_1": (w1_times, w1_vals),
+        "wrist_2": (w2_times, w2_vals),
+    }
 
     images = {k: [] for k in cam_names}
     image_timestamps = []
@@ -626,44 +685,54 @@ def synchronize_trial_data(trial_buffers,
     for k, target_t in enumerate(target_timestamps):
         is_image_tick = (k % image_interval == 0)
 
-        t_arm, arm_val = find_closest_sample(arm_times, arm_vals, target_t, state_tolerance)
+        t_arm, arm_val = find_interpolated_sample(
+            arm_times, arm_vals, target_t, state_tolerance, max_interpolation_gap)
         if arm_val is None:
             dropped_steps += 1
             continue
         arm_pos, arm_vel, arm_effort = arm_val
 
-        t_jaw, jaw_val = find_closest_sample(jaw_times, jaw_vals, t_arm, state_tolerance)
+        t_jaw, jaw_val = find_interpolated_sample(
+            jaw_times, jaw_vals, target_t, state_tolerance, max_interpolation_gap)
         if jaw_val is None:
             dropped_steps += 1
             continue
         jaw_pos, jaw_vel, _ = jaw_val
 
-        t_cmd_arm, cmd_arm_pos = cmd_matcher(cmd_arm_times, cmd_arm_vals, t_arm, command_tolerance)
+        t_cmd_arm, cmd_arm_pos = find_interpolated_sample(
+            cmd_arm_times, cmd_arm_vals, target_t, command_tolerance,
+            max_interpolation_gap, matcher=cmd_matcher)
         if cmd_arm_pos is None:
             dropped_steps += 1
             continue
 
-        t_cmd_jaw, cmd_jaw_pos = cmd_matcher(cmd_jaw_times, cmd_jaw_vals, t_arm, command_tolerance)
+        t_cmd_jaw, cmd_jaw_pos = find_interpolated_sample(
+            cmd_jaw_times, cmd_jaw_vals, target_t, command_tolerance,
+            max_interpolation_gap, matcher=cmd_matcher)
         if cmd_jaw_pos is None:
             dropped_steps += 1
             continue
 
-        _, spatial_val = find_closest_sample(spatial_times, spatial_vals, t_arm, state_tolerance)
+        _, spatial_val = find_interpolated_sample(
+            spatial_times, spatial_vals, target_t, state_tolerance, max_interpolation_gap)
         if spatial_val is None:
             dropped_steps += 1
             continue
 
-        _, body_val = find_closest_sample(body_times, body_vals, t_arm, state_tolerance)
+        _, body_val = find_interpolated_sample(
+            body_times, body_vals, target_t, state_tolerance, max_interpolation_gap)
         if body_val is None:
             dropped_steps += 1
             continue
 
-        _, meas_val = find_closest_sample(meas_times, meas_vals, t_arm, state_tolerance)
+        _, meas_val = find_interpolated_sample(
+            meas_times, meas_vals, target_t, state_tolerance, max_interpolation_gap)
         if meas_val is None:
             dropped_steps += 1
             continue
 
-        _, grav_pos = find_closest_sample(grav_times, grav_vals, t_arm, state_tolerance)
+        _, grav_pos = find_interpolated_sample(
+            grav_times, grav_vals, target_t, state_tolerance, max_interpolation_gap)
         if grav_pos is None:
             dropped_steps += 1
             continue
@@ -671,32 +740,16 @@ def synchronize_trial_data(trial_buffers,
         tick_images = {}
         tick_source_cams = {}
         if is_image_tick:
-            t_left, left_frame = find_closest_sample(left_times, left_vals, t_arm, image_tolerance)
-            t_right, right_frame = find_closest_sample(right_times, right_vals, t_arm, image_tolerance)
-            if left_frame is None or right_frame is None:
-                dropped_steps += 1
+            for cam in cam_names:
+                cam_times, cam_frames = camera_samples[cam]
+                source_time, frame = find_closest_sample(cam_times, cam_frames, target_t, image_tolerance)
+                if frame is None:
+                    dropped_steps += 1
+                    break
+                tick_images[cam] = frame.copy()
+                tick_source_cams[cam] = float(source_time)
+            if len(tick_images) != len(cam_names):
                 continue
-
-            tick_images["left"] = left_frame.copy()
-            tick_images["right"] = right_frame.copy()
-            tick_source_cams["left"] = float(t_left)
-            tick_source_cams["right"] = float(t_right)
-
-            if "cam1" in wrist_cameras:
-                t_w1, w1_frame = find_closest_sample(w1_times, w1_vals, t_arm, image_tolerance)
-                if w1_frame is None:
-                    dropped_steps += 1
-                    continue
-                tick_images["wrist_1"] = w1_frame.copy()
-                tick_source_cams["wrist_1"] = float(t_w1)
-
-            if "cam2" in wrist_cameras:
-                t_w2, w2_frame = find_closest_sample(w2_times, w2_vals, t_arm, image_tolerance)
-                if w2_frame is None:
-                    dropped_steps += 1
-                    continue
-                tick_images["wrist_2"] = w2_frame.copy()
-                tick_source_cams["wrist_2"] = float(t_w2)
 
             if resize is not None and cv2 is not None:
                 w, h = resize
@@ -711,7 +764,7 @@ def synchronize_trial_data(trial_buffers,
         qpos_list.append(qpos)
         qvel_list.append(qvel)
         action_list.append(action)
-        timestamps.append(float(t_arm))
+        timestamps.append(float(target_t))
         arm_effort_list.append(arm_effort)
         spatial_cf_list.append(spatial_val)
         body_cf_list.append(body_val)
@@ -727,7 +780,7 @@ def synchronize_trial_data(trial_buffers,
             for cam in cam_names:
                 images[cam].append(tick_images[cam])
                 image_source_times[cam].append(tick_source_cams[cam])
-            image_timestamps.append(float(t_arm))
+            image_timestamps.append(float(target_t))
             image_indices.append(accepted_steps)
 
         accepted_steps += 1
@@ -764,6 +817,7 @@ def synchronize_trial_data(trial_buffers,
             "state_tolerance_sec":   float(state_tolerance),
             "image_tolerance_sec":   float(image_tolerance),
             "command_tolerance_sec": float(command_tolerance),
+            "max_interpolation_gap_sec": float(max_interpolation_gap),
             "wall_start_time":       float(wall_start_time or t_start),
             "wall_end_time":         float(time.time()),
             "joint_dim":             int(len(qpos_list[0])),
@@ -785,6 +839,12 @@ def save_episode(save_path,
     """Save synchronized multi-modal data into standard ACT HDF5 layout."""
     if h5py is None:
         raise ImportError("h5py is required to save HDF5 files.")
+
+    images = data.get("images", {})
+    missing_cameras = [cam for cam, frames in images.items() if not frames]
+    if not images or missing_cameras:
+        camera_list = ", ".join(missing_cameras) if missing_cameras else "none configured"
+        raise ValueError(f"Cannot save episode without synchronized images for camera(s): {camera_list}.")
 
     qpos = np.stack(data["qpos"])
     qvel = np.stack(data["qvel"])
@@ -809,6 +869,7 @@ def save_episode(save_path,
         f.attrs['state_tolerance_sec'] = float(data["meta"]["state_tolerance_sec"])
         f.attrs['image_tolerance_sec'] = float(data["meta"]["image_tolerance_sec"])
         f.attrs['command_tolerance_sec'] = float(data["meta"]["command_tolerance_sec"])
+        f.attrs['max_interpolation_gap_sec'] = float(data["meta"].get("max_interpolation_gap_sec", 0.03))
 
         f.attrs['joint_dim'] = int(data["meta"]["joint_dim"])
         f.attrs['wall_start_time'] = float(data["meta"]["wall_start_time"])
@@ -936,11 +997,19 @@ def run_cli_recording(args, node):
                 resize=resize,
                 command_mode=args.command_mode,
                 wrist_cameras=args.wrist_cameras,
-                wall_start_time=wall_start
+                wall_start_time=wall_start,
+                max_interpolation_gap=args.max_interpolation_gap
             )
 
-            if data is None or len(data.get("qpos", [])) < 2:
-                print("[ERROR] Trial failed or too many dropped frames. Discarding automatically.")
+            camera_images = data.get("images", {}) if data else {}
+            missing_cameras = [cam for cam, frames in camera_images.items() if not frames]
+            has_camera_images = bool(camera_images) and not missing_cameras
+            if data is None or len(data.get("qpos", [])) < 2 or not has_camera_images:
+                if not has_camera_images:
+                    camera_list = ", ".join(missing_cameras) if missing_cameras else "none configured"
+                    print(f"[ERROR] No synchronized images for camera(s): {camera_list}. Discarding automatically.")
+                else:
+                    print("[ERROR] Trial failed or too many dropped frames. Discarding automatically.")
                 if bag_path and os.path.exists(bag_path): shutil.rmtree(bag_path, ignore_errors=True)
                 if force_bag_path and os.path.exists(force_bag_path): shutil.rmtree(force_bag_path, ignore_errors=True)
                 continue
@@ -990,17 +1059,19 @@ def parse_args():
                         help='Directory where HDF5 episodes are saved')
     parser.add_argument('--seconds_per_episode', type=float, default=15.0,
                         help='Duration of each episode in seconds')
-    parser.add_argument('--fps', type=float, default=100.0,
+    parser.add_argument('--fps', type=float, default=1000.0,
                         help='Target state/action/force recording frequency (Hz)')
     parser.add_argument('--image_fps', type=float, default=20.0,
                         help='Target camera recording frequency (Hz). Must be <= --fps')
 
-    parser.add_argument('--state_tolerance', type=float, default=0.03,
-                        help='Nearest-sample tolerance for state/force topics (seconds)')
-    parser.add_argument('--image_tolerance', type=float, default=0.08,
+    parser.add_argument('--state_tolerance', type=float, default=0.002,
+                        help='Maximum direct-match offset for state/force topics before interpolation (seconds)')
+    parser.add_argument('--image_tolerance', type=float, default=0.025,
                         help='Nearest-frame tolerance for cameras (seconds)')
-    parser.add_argument('--command_tolerance', type=float, default=0.05,
-                        help='Tolerance for operator joint setpoints (seconds)')
+    parser.add_argument('--command_tolerance', type=float, default=0.002,
+                        help='Maximum direct-match offset for commands before interpolation (seconds)')
+    parser.add_argument('--max_interpolation_gap', type=float, default=0.002,
+                        help='Maximum source-sample gap that can be linearly interpolated (seconds)')
     parser.add_argument('--warmup_sec', type=float, default=0.0,
                         help='Warmup delay before recording begins')
 
@@ -1017,7 +1088,7 @@ def parse_args():
     parser.add_argument('--right_topic', default='/console1/right/image_raw')
     parser.add_argument('--wrist1_topic', default='/wrist/cam1/image_raw')
     parser.add_argument('--wrist2_topic', default='/wrist/cam2/image_raw')
-    parser.add_argument('--wrist_cameras', nargs='*', default=['cam1', 'cam2'], choices=['cam1', 'cam2'],
+    parser.add_argument('--wrist_cameras', nargs='*', default=['cam1'], choices=['cam1', 'cam2'],
                         help='Which wrist cameras to include')
 
     # Image formatting

@@ -25,6 +25,12 @@ try:
 except ImportError:
     cv2 = None
 
+if cv2 is not None:
+    cv2_qt_plugin_dir = os.path.join(os.path.dirname(cv2.__file__), "qt", "plugins")
+    configured_qt_plugin_dir = os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH")
+    if configured_qt_plugin_dir and os.path.realpath(configured_qt_plugin_dir) == os.path.realpath(cv2_qt_plugin_dir):
+        os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
 # Qt imports supporting PyQt5, PyQt6, PySide6, PySide2
 QT_AVAILABLE = False
 QT_LIB = None
@@ -75,7 +81,6 @@ from record_dvrk_episodes import (
     DVRKRecorder,
     synchronize_trial_data,
     save_episode,
-    derive_topic_names,
     get_next_episode_idx,
     start_rosbag_recording,
     stop_rosbag_recording,
@@ -89,6 +94,30 @@ if ROS_AVAILABLE:
 
 
 if QT_AVAILABLE:
+
+    class TrialProcessingThread(QtCore.QThread):
+        completed = Signal(object)
+        failed = Signal(str)
+
+        def __init__(self, trial_buffers, bag_processes, sync_options, parent=None):
+            super().__init__(parent)
+            self.trial_buffers = trial_buffers
+            self.bag_processes = bag_processes
+            self.sync_options = sync_options
+
+        def run(self):
+            try:
+                for process in self.bag_processes:
+                    if process is not None:
+                        stop_rosbag_recording(process)
+                trial_data = synchronize_trial_data(
+                    trial_buffers=self.trial_buffers,
+                    **self.sync_options
+                )
+                self.completed.emit(trial_data)
+            except Exception as exc:
+                self.failed.emit(f"{type(exc).__name__}: {exc}")
+
 
     class RecordMainWindow(QMainWindow):
         """
@@ -107,6 +136,7 @@ if QT_AVAILABLE:
             self.current_force_bag_path = None
             self.bag_proc = None
             self.force_bag_proc = None
+            self.processing_thread = None
 
             self.setWindowTitle("dVRK Episode Recorder & Data Collection")
             self.resize(1200, 800)
@@ -155,6 +185,31 @@ if QT_AVAILABLE:
             }
             QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
                 border: 1px solid #3b82f6;
+            }
+            QCheckBox {
+                spacing: 9px;
+                color: #f4f4f5;
+                font-weight: 600;
+            }
+            QCheckBox:checked {
+                color: #6ee7b7;
+            }
+            QCheckBox::indicator {
+                width: 19px;
+                height: 19px;
+                border: 2px solid #d4d4d8;
+                border-radius: 4px;
+                background-color: #09090b;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #facc15;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #d1fae5;
+                background-color: #10b981;
+            }
+            QCheckBox::indicator:checked:hover {
+                background-color: #059669;
             }
             QPushButton {
                 background-color: #27272a;
@@ -332,25 +387,41 @@ if QT_AVAILABLE:
             self.combo_psm.currentIndexChanged.connect(self._on_psm_changed)
             layout_robot.addWidget(self.combo_psm, 0, 1)
 
-            layout_robot.addWidget(QLabel("Arm Joints:"), 1, 0)
-            self.spin_arm_joints = QSpinBox()
-            self.spin_arm_joints.setRange(1, 10)
-            self.spin_arm_joints.setValue(int(self.args.arm_joints))
-            layout_robot.addWidget(self.spin_arm_joints, 1, 1)
+            self.chk_camera_left = QCheckBox("Left")
+            self.chk_camera_left.setChecked(True)
+            self.edit_topic_left = QLineEdit(self.args.left_topic)
+            layout_robot.addWidget(self.chk_camera_left, 1, 0)
+            layout_robot.addWidget(self.edit_topic_left, 1, 1, 1, 2)
 
-            layout_robot.addWidget(QLabel("Wrist Cams:"), 2, 0)
-            layout_wrist = QHBoxLayout()
-            self.chk_wrist1 = QCheckBox("Cam 1")
+            self.chk_camera_right = QCheckBox("Right")
+            self.chk_camera_right.setChecked(True)
+            self.edit_topic_right = QLineEdit(self.args.right_topic)
+            layout_robot.addWidget(self.chk_camera_right, 2, 0)
+            layout_robot.addWidget(self.edit_topic_right, 2, 1, 1, 2)
+
+            self.chk_wrist1 = QCheckBox("Wrist 1")
             self.chk_wrist1.setChecked("cam1" in self.args.wrist_cameras)
-            self.chk_wrist2 = QCheckBox("Cam 2")
-            self.chk_wrist2.setChecked("cam2" in self.args.wrist_cameras)
-            self.chk_wrist1.stateChanged.connect(self._on_wrist_changed)
-            self.chk_wrist2.stateChanged.connect(self._on_wrist_changed)
-            layout_wrist.addWidget(self.chk_wrist1)
-            layout_wrist.addWidget(self.chk_wrist2)
-            layout_robot.addLayout(layout_wrist, 2, 1)
+            self.edit_topic_wrist1 = QLineEdit(self.args.wrist1_topic)
+            layout_robot.addWidget(self.chk_wrist1, 3, 0)
+            layout_robot.addWidget(self.edit_topic_wrist1, 3, 1, 1, 2)
 
-            layout_robot.addWidget(QLabel("Image Resize:"), 3, 0)
+            self.chk_wrist2 = QCheckBox("Wrist 2")
+            self.chk_wrist2.setChecked("cam2" in self.args.wrist_cameras)
+            self.edit_topic_wrist2 = QLineEdit(self.args.wrist2_topic)
+            layout_robot.addWidget(self.chk_wrist2, 4, 0)
+            layout_robot.addWidget(self.edit_topic_wrist2, 4, 1, 1, 2)
+
+            self.camera_controls = [
+                ("left", self.chk_camera_left, self.edit_topic_left),
+                ("right", self.chk_camera_right, self.edit_topic_right),
+                ("wrist_1", self.chk_wrist1, self.edit_topic_wrist1),
+                ("wrist_2", self.chk_wrist2, self.edit_topic_wrist2),
+            ]
+            for _, checkbox, topic_edit in self.camera_controls:
+                checkbox.stateChanged.connect(self._on_camera_configuration_changed)
+                topic_edit.editingFinished.connect(self._on_camera_configuration_changed)
+
+            layout_robot.addWidget(QLabel("Image Resize:"), 5, 0)
             layout_resize = QHBoxLayout()
             self.spin_res_w = QSpinBox()
             self.spin_res_w.setRange(0, 1920)
@@ -361,13 +432,7 @@ if QT_AVAILABLE:
             layout_resize.addWidget(self.spin_res_w)
             layout_resize.addWidget(QLabel("x"))
             layout_resize.addWidget(self.spin_res_h)
-            layout_robot.addLayout(layout_resize, 3, 1)
-
-            layout_robot.addWidget(QLabel("Encoding:"), 4, 0)
-            self.combo_encoding = QComboBox()
-            self.combo_encoding.addItems(["bgr8", "rgb8"])
-            self.combo_encoding.setCurrentText(self.args.image_encoding)
-            layout_robot.addWidget(self.combo_encoding, 4, 1)
+            layout_robot.addLayout(layout_resize, 5, 1)
 
             left_layout.addWidget(grp_robot)
 
@@ -376,25 +441,37 @@ if QT_AVAILABLE:
             layout_opts = QGridLayout(grp_opts)
             layout_opts.setSpacing(8)
 
-            layout_opts.addWidget(QLabel("State Tol (s):"), 0, 0)
+            layout_opts.addWidget(QLabel("State Tol (ms):"), 0, 0)
             self.spin_state_tol = QDoubleSpinBox()
-            self.spin_state_tol.setRange(0.001, 1.0)
-            self.spin_state_tol.setValue(float(self.args.state_tolerance))
+            self.spin_state_tol.setRange(0.1, 1000.0)
+            self.spin_state_tol.setDecimals(1)
+            self.spin_state_tol.setSingleStep(1.0)
+            self.spin_state_tol.setValue(float(self.args.state_tolerance) * 1000.0)
             layout_opts.addWidget(self.spin_state_tol, 0, 1)
 
-            layout_opts.addWidget(QLabel("Image Tol (s):"), 1, 0)
+            layout_opts.addWidget(QLabel("Image Tol (ms):"), 1, 0)
             self.spin_img_tol = QDoubleSpinBox()
-            self.spin_img_tol.setRange(0.001, 1.0)
-            self.spin_img_tol.setValue(float(self.args.image_tolerance))
+            self.spin_img_tol.setRange(0.1, 1000.0)
+            self.spin_img_tol.setDecimals(1)
+            self.spin_img_tol.setSingleStep(1.0)
+            self.spin_img_tol.setValue(float(self.args.image_tolerance) * 1000.0)
             layout_opts.addWidget(self.spin_img_tol, 1, 1)
+
+            layout_opts.addWidget(QLabel("Max Interp Gap (ms):"), 2, 0)
+            self.spin_max_interpolation_gap = QDoubleSpinBox()
+            self.spin_max_interpolation_gap.setRange(2.0, 1000.0)
+            self.spin_max_interpolation_gap.setDecimals(1)
+            self.spin_max_interpolation_gap.setSingleStep(1.0)
+            self.spin_max_interpolation_gap.setValue(float(self.args.max_interpolation_gap) * 1000.0)
+            layout_opts.addWidget(self.spin_max_interpolation_gap, 2, 1)
 
             self.chk_record_bag = QCheckBox("Record Raw Rosbag")
             self.chk_record_bag.setChecked(bool(self.args.record_bag))
-            layout_opts.addWidget(self.chk_record_bag, 2, 0, 1, 2)
+            layout_opts.addWidget(self.chk_record_bag, 3, 0, 1, 2)
 
             self.chk_force_bag = QCheckBox("Record Separate Force Bag")
             self.chk_force_bag.setChecked(bool(self.args.force_sensor))
-            layout_opts.addWidget(self.chk_force_bag, 3, 0, 1, 2)
+            layout_opts.addWidget(self.chk_force_bag, 4, 0, 1, 2)
 
             left_layout.addWidget(grp_opts)
             left_layout.addStretch()
@@ -425,12 +502,30 @@ if QT_AVAILABLE:
             layout_ctrl_h.setContentsMargins(0, 0, 0, 0)
             layout_ctrl_h.setSpacing(12)
 
-            # Camera feed preview box
-            self.lbl_preview = QLabel("Waiting for camera feed...")
-            self.lbl_preview.setFixedSize(320, 240)
+            # Side-by-side endoscope and wrist camera previews
+            preview_panel = QWidget()
+            preview_layout = QHBoxLayout(preview_panel)
+            preview_layout.setContentsMargins(0, 0, 0, 0)
+            preview_layout.setSpacing(8)
+
+            self.grp_endoscope_preview = QGroupBox("Endoscope")
+            endoscope_layout = QVBoxLayout(self.grp_endoscope_preview)
+            self.lbl_preview = QLabel("Waiting for endoscope feed...")
+            self.lbl_preview.setFixedSize(240, 180)
             self.lbl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter if hasattr(Qt, 'AlignmentFlag') else Qt.AlignCenter)
-            self.lbl_preview.setStyleSheet("border: 1px dashed #3f3f46; border-radius: 6px; background: #121214;")
-            layout_ctrl_h.addWidget(self.lbl_preview)
+            self.lbl_preview.setStyleSheet("border: 1px dashed #52525b; border-radius: 6px; background: #121214;")
+            endoscope_layout.addWidget(self.lbl_preview)
+            preview_layout.addWidget(self.grp_endoscope_preview)
+
+            self.grp_wrist_preview = QGroupBox("Wrist Camera")
+            wrist_layout = QVBoxLayout(self.grp_wrist_preview)
+            self.lbl_wrist_preview = QLabel("Waiting for wrist camera feed...")
+            self.lbl_wrist_preview.setFixedSize(240, 180)
+            self.lbl_wrist_preview.setAlignment(Qt.AlignmentFlag.AlignCenter if hasattr(Qt, 'AlignmentFlag') else Qt.AlignCenter)
+            self.lbl_wrist_preview.setStyleSheet("border: 1px dashed #52525b; border-radius: 6px; background: #121214;")
+            wrist_layout.addWidget(self.lbl_wrist_preview)
+            preview_layout.addWidget(self.grp_wrist_preview)
+            layout_ctrl_h.addWidget(preview_panel)
 
             # Recording action bar
             ctrl_box = QWidget()
@@ -502,16 +597,30 @@ if QT_AVAILABLE:
                 self.spin_episode_idx.setValue(get_next_episode_idx(folder))
 
         def _on_psm_changed(self):
-            new_psm = self.combo_psm.currentText()
-            wrist_cams = []
-            if self.chk_wrist1.isChecked(): wrist_cams.append('cam1')
-            if self.chk_wrist2.isChecked(): wrist_cams.append('cam2')
-            if self.node is not None:
-                self.node.update_configuration(psm=new_psm, wrist_cameras=wrist_cams)
-            self._log(f"Updated configuration to {new_psm}")
+            self._apply_camera_configuration()
+            self._log(f"Updated configuration to {self.combo_psm.currentText()}")
 
-        def _on_wrist_changed(self):
-            self._on_psm_changed()
+        def _selected_camera_names(self):
+            return [name for name, checkbox, _ in self.camera_controls if checkbox.isChecked()]
+
+        def _apply_camera_configuration(self):
+            selected = set(self._selected_camera_names())
+            wrist_cameras = []
+            if "wrist_1" in selected: wrist_cameras.append("cam1")
+            if "wrist_2" in selected: wrist_cameras.append("cam2")
+            if self.node is not None:
+                self.node.update_configuration(
+                    psm=self.combo_psm.currentText(),
+                    wrist_cameras=wrist_cameras,
+                    left_topic=self.edit_topic_left.text().strip() if "left" in selected else "none",
+                    right_topic=self.edit_topic_right.text().strip() if "right" in selected else "none",
+                    wrist1_topic=self.edit_topic_wrist1.text().strip(),
+                    wrist2_topic=self.edit_topic_wrist2.text().strip(),
+                )
+            return self._selected_camera_names()
+
+        def _on_camera_configuration_changed(self):
+            self._apply_camera_configuration()
 
         def _update_monitoring(self):
             if self.node is None:
@@ -535,18 +644,39 @@ if QT_AVAILABLE:
                 self.table_topics.setItem(row, 2, item_rate)
                 self.table_topics.setItem(row, 3, item_count)
 
-            # 2. Update camera preview
+            # 2. Update camera previews
             with self.node.preview_lock:
                 preview_img = self.node.latest_preview_img
+                wrist_preview_img = self.node.latest_wrist_preview_img
+                wrist_preview_name = self.node.latest_wrist_preview_name
+                wrist_preview_time = self.node.latest_wrist_preview_time
 
-            if preview_img is not None and cv2 is not None:
-                h, w, c = preview_img.shape
-                rgb = cv2.cvtColor(preview_img, cv2.COLOR_BGR2RGB) if self.combo_encoding.currentText() == 'bgr8' else preview_img
-                qimg = QImage(rgb.data, w, h, w * c, QImage.Format.Format_RGB888 if hasattr(QImage, 'Format') else QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(qimg).scaled(320, 240,
-                    Qt.AspectRatioMode.KeepAspectRatio if hasattr(Qt, 'AspectRatioMode') else Qt.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation if hasattr(Qt, 'TransformationMode') else Qt.SmoothTransformation)
-                self.lbl_preview.setPixmap(pixmap)
+            self._set_preview_image(self.lbl_preview, preview_img, "Waiting for endoscope feed...")
+            wrist_is_recent = wrist_preview_time and (time.monotonic() - wrist_preview_time) < 1.0
+            if wrist_preview_img is not None and wrist_is_recent:
+                camera_label = "Wrist 1" if wrist_preview_name == "wrist_1" else "Wrist 2"
+                self.grp_wrist_preview.setTitle(camera_label)
+                self._set_preview_image(self.lbl_wrist_preview, wrist_preview_img, "Waiting for wrist camera feed...")
+            else:
+                self.grp_wrist_preview.setTitle("Wrist Camera")
+                self._set_preview_image(self.lbl_wrist_preview, None, "Waiting for wrist camera feed...")
+
+        def _set_preview_image(self, label, image, waiting_text):
+            if image is None or cv2 is None:
+                label.setPixmap(QPixmap())
+                label.setText(waiting_text)
+                return
+
+            height, width, channels = image.shape
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if self.args.image_encoding == 'bgr8' else image
+            qimg = QImage(rgb.data, width, height, width * channels,
+                          QImage.Format.Format_RGB888 if hasattr(QImage, 'Format') else QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg).scaled(
+                label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio if hasattr(Qt, 'AspectRatioMode') else Qt.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation if hasattr(Qt, 'TransformationMode') else Qt.SmoothTransformation)
+            label.setText("")
+            label.setPixmap(pixmap)
 
         def _on_toggle_recording(self):
             if self.node is None:
@@ -559,6 +689,19 @@ if QT_AVAILABLE:
                 self._stop_recording()
 
         def _start_recording(self):
+            self.recording_camera_names = self._selected_camera_names()
+            if not self.recording_camera_names:
+                QMessageBox.warning(self, "Select a camera", "Select at least one camera topic to record.")
+                return
+            selected_controls = [entry for entry in self.camera_controls if entry[0] in self.recording_camera_names]
+            if any(not topic_edit.text().strip() for _, _, topic_edit in selected_controls):
+                QMessageBox.warning(self, "Camera topic required", "Enter a topic name for each selected camera.")
+                return
+            self._apply_camera_configuration()
+            for _, checkbox, topic_edit in self.camera_controls:
+                checkbox.setEnabled(False)
+                topic_edit.setEnabled(False)
+
             idx = self.spin_episode_idx.value()
             self._log(f"Starting recording trial episode_{idx:03d} ...")
 
@@ -573,11 +716,7 @@ if QT_AVAILABLE:
             self.bag_proc = None
             self.force_bag_proc = None
 
-            psm = self.combo_psm.currentText()
-            wrist_cams = []
-            if self.chk_wrist1.isChecked(): wrist_cams.append('cam1')
-            if self.chk_wrist2.isChecked(): wrist_cams.append('cam2')
-            topics = derive_topic_names(psm=psm, wrist_cameras=wrist_cams)
+            topics = self.node.topic_names
 
             if self.chk_record_bag.isChecked():
                 bag_dir = self.args.bag_dir
@@ -626,49 +765,87 @@ if QT_AVAILABLE:
         def _stop_recording(self):
             self.record_timer.stop()
             buffers, wall_start = self.node.stop_recording()
+            bag_processes = (self.bag_proc, self.force_bag_proc)
+            self.bag_proc = None
+            self.force_bag_proc = None
 
-            # Stop rosbag processes
-            if self.bag_proc:
-                stop_rosbag_recording(self.bag_proc)
-                self.bag_proc = None
-            if self.force_bag_proc:
-                stop_rosbag_recording(self.force_bag_proc)
-                self.force_bag_proc = None
-
-            self.btn_record.setText("START RECORDING")
-            self.btn_record.setObjectName("btnRecord")
-            self.btn_record.setStyleSheet("background-color: #10b981; color: #fff;")
+            self.btn_record.setText("PROCESSING TRIAL...")
+            self.btn_record.setEnabled(False)
             self.lbl_record_status.setText("Processing & Synchronizing trial data...")
+            self.lbl_review_stats.setText("Processing trial data. The recorder will remain available.")
+            self.prog_bar.setRange(0, 0)
+            self.btn_save.setEnabled(False)
+            self.btn_discard.setEnabled(False)
 
-            # Run nearest-timestep synchronizer at the specified frequency
             dur_mode = self.combo_duration_mode.currentText()
             req_seconds = self.spin_duration.value() if dur_mode == "Fixed Duration" else None
             resize = (self.spin_res_w.value(), self.spin_res_h.value()) if (self.spin_res_w.value() > 0 and self.spin_res_h.value() > 0) else None
 
-            wrist_cams = []
-            if self.chk_wrist1.isChecked(): wrist_cams.append('cam1')
-            if self.chk_wrist2.isChecked(): wrist_cams.append('cam2')
-
-            self.current_trial_data = synchronize_trial_data(
-                trial_buffers=buffers,
+            sync_options = dict(
                 fps=self.spin_fps.value(),
                 image_fps=self.spin_img_fps.value(),
-                state_tolerance=self.spin_state_tol.value(),
-                image_tolerance=self.spin_img_tol.value(),
+                state_tolerance=self.spin_state_tol.value() / 1000.0,
+                image_tolerance=self.spin_img_tol.value() / 1000.0,
                 command_tolerance=float(self.args.command_tolerance),
                 requested_seconds=req_seconds,
                 resize=resize,
                 command_mode=str(self.args.command_mode),
-                wrist_cameras=wrist_cams,
-                wall_start_time=wall_start
+                wrist_cameras=self.args.wrist_cameras,
+                wall_start_time=wall_start,
+                camera_names=self.recording_camera_names,
+                max_interpolation_gap=self.spin_max_interpolation_gap.value() / 1000.0
             )
 
-            if self.current_trial_data is None or len(self.current_trial_data.get("qpos", [])) < 2:
+            self.processing_thread = TrialProcessingThread(
+                buffers, bag_processes, sync_options, self)
+            self.processing_thread.completed.connect(self._on_trial_processed)
+            self.processing_thread.failed.connect(self._on_trial_processing_failed)
+            self.processing_thread.finished.connect(self.processing_thread.deleteLater)
+            self.processing_thread.start()
+
+        def _restore_after_processing(self):
+            self.processing_thread = None
+            self.prog_bar.setRange(0, 100)
+            self.prog_bar.setValue(0)
+            self.btn_record.setText("START RECORDING")
+            self.btn_record.setObjectName("btnRecord")
+            self.btn_record.setStyleSheet("background-color: #10b981; color: #fff;")
+            self.btn_record.setEnabled(True)
+            for _, checkbox, topic_edit in self.camera_controls:
+                checkbox.setEnabled(True)
+                topic_edit.setEnabled(True)
+
+        def _on_trial_processing_failed(self, error_message):
+            self._restore_after_processing()
+            self.current_trial_data = None
+            self.lbl_record_status.setText("Processing failed. Discard the trial or retry.")
+            self.lbl_review_stats.setText(error_message)
+            self.btn_save.setEnabled(False)
+            self.btn_discard.setEnabled(True)
+            self._log(f"Trial processing failed: {error_message}")
+
+        def _on_trial_processed(self, trial_data):
+            self._restore_after_processing()
+            self.current_trial_data = trial_data
+            camera_images = self.current_trial_data.get("images", {}) if self.current_trial_data else {}
+            missing_cameras = [cam for cam, frames in camera_images.items() if not frames]
+            has_camera_images = bool(camera_images) and not missing_cameras
+            if (self.current_trial_data is None
+                    or len(self.current_trial_data.get("qpos", [])) < 2
+                    or not has_camera_images):
                 self.lbl_record_status.setText("Trial failed: insufficient data or dropped frames.")
-                self.lbl_review_stats.setText("⚠️ Synchronization returned too few samples. Discarding recommended.")
+                if not has_camera_images:
+                    camera_list = ", ".join(missing_cameras) if missing_cameras else "none configured"
+                    self.lbl_record_status.setText("Trial failed: no camera frames were synchronized.")
+                    self.lbl_review_stats.setText(f"No synchronized images for: {camera_list}. Check camera topics and retry.")
+                else:
+                    self.lbl_review_stats.setText("Synchronization returned too few samples. Discarding recommended.")
                 self.btn_save.setEnabled(False)
                 self.btn_discard.setEnabled(True)
-                self._log("Synchronization failed: insufficient samples.")
+                if not has_camera_images:
+                    self._log(f"Synchronization failed: no images for {camera_list}.")
+                else:
+                    self._log("Synchronization failed: insufficient samples.")
                 return
 
             meta = self.current_trial_data["meta"]
@@ -702,7 +879,7 @@ if QT_AVAILABLE:
                 episode_idx=idx,
                 topic_names=self.node.topic_names,
                 resize=resize,
-                image_encoding=self.combo_encoding.currentText()
+                image_encoding=self.args.image_encoding
             )
 
             self._log(f"✅ Saved Episode #{idx} -> {save_path}")
@@ -733,6 +910,10 @@ if QT_AVAILABLE:
             self.prog_bar.setValue(0)
 
         def closeEvent(self, event):
+            if self.processing_thread is not None and self.processing_thread.isRunning():
+                QMessageBox.information(self, "Processing trial", "Please wait for trial processing to finish before closing.")
+                event.ignore()
+                return
             self.monitor_timer.stop()
             self.record_timer.stop()
             if self.node is not None and self.node.is_recording:
