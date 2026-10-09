@@ -67,7 +67,7 @@ class ArmCustom:
             self._utils.add_measured_js()
 
     class _Body:
-        """bilateral: /body 子命名空间,用于 servo_cf 发送 f_cmd wrench"""
+        """bilateral: /body sub-namespace, used by servo_cf to send f_cmd wrench"""
         def __init__(self, ral, operating_state_instance):
             self._utils = crtk.utils(
                 class_instance=self, ral=ral,
@@ -85,7 +85,7 @@ class ArmCustom:
         self._utils.add_measured_js()
         self._utils.add_setpoint_js()
         try:
-            self._utils.add_servo_jv()   # 速度前馈通道 (--send_jv), 老版本 crtk 可能没有
+            self._utils.add_servo_jv()   # Velocity feedforward channel (--send_jv), older crtk versions may not have it
         except Exception:
             pass
         self.jaw  = self._Jaw(ral.create_child("/jaw"),  operating_state_instance=self)
@@ -119,7 +119,7 @@ def safe_measured_jp(arm_or_jaw):
 
 
 def safe_measured_jv(arm_or_jaw):
-    """bilateral: 读取测量关节速度 (crtk measured_js → (p, v, eff))"""
+    """bilateral: Read measured joint velocities (crtk measured_js -> (p, v, eff))"""
     try:
         result = arm_or_jaw.measured_jv()
     except AttributeError:
@@ -207,24 +207,24 @@ class ChunkAggregator:
 
 
 # ============================================================
-# High-rate executor  (方案1: 插值上采样 / 方案2: 子步剖面回放)
+# High-rate executor  (Scheme 1: Interpolation upsampling / Scheme 2: Substep profile playback)
 # ============================================================
 
 class HighRateExecutor(threading.Thread):
     """
-    独立线程以 rate_hz (目标 1000 Hz) 持续下发 servo 指令。
-    策略主循环 (30 Hz) 每步调用 set_segment() 更新一段轨迹:
+    Independent thread continuously issuing servo commands at rate_hz (target 1000 Hz).
+    Policy main loop (30 Hz) calls set_segment() each step to update a trajectory segment:
 
-      位置:  q(α)   = (1-α) q0 + α q1,  α = (now - t0)/duration ∈ [0,1]
-             (α ≥ 1 后保持 q1, 起 keep-alive 作用)
-      力:    方案1  f(α) = (1-α) f0 + α f1          (线性插值)
-             方案2  f(α) = profile[⌊α·K⌋]           (K 子步剖面回放)
-             hold 模式    f(α) = f1                  (零阶保持)
-      速度前馈 (可选): qv = (q1-q0)/duration (α<1), 否则 0 → servo_jv
+      Position:  q(alpha)   = (1-alpha) q0 + alpha q1,  alpha = (now - t0)/duration in [0,1]
+                 (alpha >= 1 holds q1, acting as keep-alive)
+      Force:     Scheme 1   f(alpha) = (1-alpha) f0 + alpha f1          (Linear interpolation)
+                 Scheme 2   f(alpha) = profile[floor(alpha*K)]          (K substep profile playback)
+                 hold mode  f(alpha) = f1                               (Zero-order hold)
+      Velocity feedforward (optional): qv = (q1-q0)/duration (alpha<1), otherwise 0 -> servo_jv
 
-    注意: Python 线程受 GIL/调度抖动限制, 实测多在 300~800 Hz;
-    dVRK 中间件本身 ~1.5 kHz 并保持最近 setpoint, 所以重点是平滑而非
-    严格 1 kHz。达不到目标频率时会打印实测值。
+    Note: Python threads are subject to GIL/scheduler jitter, typically measuring 300~800 Hz;
+    dVRK middleware itself runs at ~1.5 kHz and holds the latest setpoint, so the focus is smoothness
+    rather than strictly 1 kHz. If the target frequency is not reached, the measured value is logged.
     """
 
     def __init__(self, arm, rate_hz=1000.0, send_force=False, send_jv=False,
@@ -238,7 +238,7 @@ class HighRateExecutor(threading.Thread):
         self.debug      = debug
 
         self._lock  = threading.Lock()
-        self._stop_evt = threading.Event()   # 注意: 不能叫 _stop, 会覆盖 Thread._stop()
+        self._stop_evt = threading.Event()   # Note: Cannot be named _stop, as it would override Thread._stop()
         self._seg   = None    # dict(t0, dur, q0, q1, jaw0, jaw1, f0, f1, profile)
         self._sent  = 0
         self._t_run0 = None
@@ -320,7 +320,7 @@ class HighRateExecutor(threading.Thread):
             if sleep_t > 0:
                 time.sleep(sleep_t)
             else:
-                next_t = time.perf_counter()   # 掉拍则重置节拍
+                next_t = time.perf_counter()   # Reset beat if timing is missed
 
 
 # ============================================================
@@ -669,12 +669,12 @@ def run_act(ral, args):
     if cf_clip_val < 0:
         cf_clip_val = 0.0
 
-    # ── bilateral: 动作维度 & qvel 归一化参数 ──────────────────────
+    # ── bilateral: Action dimension & qvel normalization parameters ─
     action_cf_dim = int(
         args.action_cf_dim if args.action_cf_dim is not None
         else stats.get("action_cf_dim",
              (policy_config or {}).get("action_cf_dim", cf_dim)))
-    # 方案2: 每步 K 个力子步 (从 stats/train_config 读取, CLI 可覆盖)
+    # Scheme 2: K force substeps per step (read from stats/train_config, overridable by CLI)
     force_substeps = int(
         args.force_substeps if args.force_substeps is not None
         else stats.get("force_substeps",
@@ -686,8 +686,8 @@ def run_act(ral, args):
         qvel_mean = np.asarray(stats["qvel_mean"], dtype=np.float32).reshape(-1)
         qvel_std  = np.asarray(stats["qvel_std"],  dtype=np.float32).reshape(-1)
     else:
-        print("[WARN] stats 中没有 qvel_mean/std - qvel token 将喂 0。"
-              "请确认 ckpt 确实是 bilateral 版训练的。")
+        print("[WARN] stats does not contain qvel_mean/std - qvel token will be fed 0s. "
+              "Please confirm that ckpt was indeed trained with bilateral version.")
         qvel_mean = np.zeros(state_dim, dtype=np.float32)
         qvel_std  = np.ones(state_dim,  dtype=np.float32)
 
@@ -725,10 +725,10 @@ def run_act(ral, args):
         print(f"CF mode      : OFF  (forced by --no_cf)")
     else:
         print(f"CF mode      : OFF  (legacy ckpt)")
-    print(f"Network in   : qpos {state_dim} + qvel {state_dim} + cf {cf_dim} (独立 token)")
+    print(f"Network in   : qpos {state_dim} + qvel {state_dim} + cf {cf_dim} (independent tokens)")
     if force_substeps > 0:
         print(f"Network out  : action_dim {action_dim} = q_cmd {state_dim} "
-              f"+ f_cmd {force_substeps}x{action_cf_dim} (方案2 substeps)")
+              f"+ f_cmd {force_substeps}x{action_cf_dim} (Scheme 2 substeps)")
     else:
         print(f"Network out  : action_dim {action_dim} = q_cmd {state_dim} + f_cmd {action_cf_dim}")
     if args.interp_hz > 0:
@@ -736,8 +736,8 @@ def run_act(ral, args):
               f"mode={'profile' if force_substeps > 0 else args.interp_mode}"
               f"{', +servo_jv' if args.send_jv else ''}")
     else:
-        print(f"High-rate    : OFF (逐步直发 {args.fps} Hz; --interp_hz 1000 开启)")
-    print(f"Force output : {'ON  (servo_cf, clip ±' + str(args.force_cmd_clip) + ' N, gain ' + str(args.force_gain) + ')' if args.send_force else 'OFF (--send_force 未开启, f_cmd 只打印不下发)'}")
+        print(f"High-rate    : OFF (Direct per-step dispatch at {args.fps} Hz; enable via --interp_hz 1000)")
+    print(f"Force output : {'ON  (servo_cf, clip ±' + str(args.force_cmd_clip) + ' N, gain ' + str(args.force_gain) + ')' if args.send_force else 'OFF (--send_force not enabled, f_cmd logged only, not sent)'}")
     print(f"camera_names : {camera_names}")
     print(f"num_queries  : {num_queries}  effective_chunk: {effective_chunk}")
     print(f"temporal_agg : {temporal_agg}  fps: {args.fps}")
@@ -1013,7 +1013,7 @@ def run_act(ral, args):
                 if num >= next_attempt:
                     next_attempt = num + 1
 
-    # ── High-rate executor (方案1 插值 / 方案2 剖面回放) ──────────────
+    # ── High-rate executor (Scheme 1 interpolation / Scheme 2 profile playback) ──
     executor = None
     if args.interp_hz > 0 and not args.dry_run:
         executor = HighRateExecutor(
@@ -1024,7 +1024,7 @@ def run_act(ral, args):
             force_mode=("profile" if force_substeps > 0 else args.interp_mode),
             debug=args.debug,
         )
-        # 先给一段"原地保持"的 segment 再启动, 避免线程空转
+        # Provide a 'hold in place' segment before starting to avoid idle thread spinning
         executor.set_segment(
             q0=np.array(current_jp, dtype=np.float32),
             q1=np.array(current_jp, dtype=np.float32),
@@ -1034,7 +1034,7 @@ def run_act(ral, args):
         executor.start()
         print(f"[executor] started @ target {args.interp_hz:.0f} Hz "
               f"(mode={'profile' if force_substeps > 0 else args.interp_mode})")
-    f_prev = np.zeros(max(action_cf_dim, 1), dtype=np.float32)   # 方案1 插值起点
+    f_prev = np.zeros(max(action_cf_dim, 1), dtype=np.float32)   # Scheme 1 interpolation start
 
     print(f"\nRunning ACT @ {args.fps:.1f} Hz. Ctrl+C to stop.\n", flush=True)
     if args.restart_after_sec > 0:
@@ -1215,7 +1215,7 @@ def run_act(ral, args):
             qpos_np   = qpos_full[:state_dim]
             qpos_np   = (qpos_np - qpos_mean) / qpos_std
 
-            # ── bilateral: 读取并归一化关节速度 ──────────────────────
+            # ── bilateral: Read and normalize joint velocity ─────────
             if args.dry_run:
                 qvel_np = np.zeros(state_dim, dtype=np.float32)
             else:
@@ -1258,7 +1258,7 @@ def run_act(ral, args):
             else:
                 cf_np = np.zeros(max(cf_dim, 1), dtype=np.float32)
 
-            # bilateral: qpos / qvel / cf 各自独立张量,不再 concat
+            # bilateral: qpos / qvel / cf are independent tokens, no longer concatenated
             qpos_t = torch.from_numpy(qpos_np).float().unsqueeze(0).to(device)
             qvel_t = torch.from_numpy(qvel_np).float().unsqueeze(0).to(device)
             cf_t   = torch.from_numpy(cf_np).float().unsqueeze(0).to(device)
@@ -1291,7 +1291,7 @@ def run_act(ral, args):
 
             action_np = raw_action * action_std + action_mean
 
-            # ── bilateral: 拆分 [q_cmd | f_cmd] ──────────────────────
+            # ── bilateral: Split [q_cmd | f_cmd] ─────────────────────
             q_cmd_np = action_np[:state_dim]
             f_flat   = action_np[state_dim:state_dim + action_f_total] \
                        if len(action_np) > state_dim \
@@ -1300,7 +1300,7 @@ def run_act(ral, args):
             if args.clip_actions:
                 q_cmd_np = np.clip(q_cmd_np, -args.action_clip_value, args.action_clip_value)
 
-            # f_cmd 安全处理: 增益 + 限幅 + (可选) 力矩清零, 对整个剖面统一应用
+            # f_cmd safety processing: gain + clipping + (optional) zero torque, applied uniformly across profile
             f_flat = f_flat * args.force_gain
             if args.force_cmd_clip > 0:
                 f_flat = np.clip(f_flat, -args.force_cmd_clip, args.force_cmd_clip)
@@ -1309,7 +1309,7 @@ def run_act(ral, args):
                 f_profile = f_flat.reshape(force_substeps, action_cf_dim)   # (K, af)
                 if args.zero_torque_cmd and action_cf_dim >= 6:
                     f_profile[:, 3:6] = 0.0
-                f_cmd_np = f_profile[-1]   # 步末值: 用于日志与下一步插值起点
+                f_cmd_np = f_profile[-1]   # End-of-step value: used for logging and next step interpolation start
             else:
                 f_profile = None
                 f_cmd_np  = f_flat
@@ -1341,7 +1341,7 @@ def run_act(ral, args):
                     print(f"[DRY] step={step_idx:5d} | jp=[{jp_str}]  jaw={jaw_cmd:+.4f}"
                           f"  f_cmd=[{f_str}]{cf_str}")
             elif executor is not None:
-                # ── 高频通道: 把整段目标交给 executor ─────────────────
+                # ── High-frequency channel: hand over full target segment to executor ──
                 executor.set_segment(
                     q0=np.array(current_jp, dtype=np.float32),
                     q1=np.array(jp_cmd,     dtype=np.float32),
@@ -1358,7 +1358,7 @@ def run_act(ral, args):
             else:
                 arm.servo_jp(np.array(jp_cmd, dtype=np.float32))
                 arm.jaw.servo_jp(np.array([jaw_cmd], dtype=np.float32))
-                # ── bilateral: 下发 f_cmd wrench (位置 + 力双通道) ────
+                # ── bilateral: Send f_cmd wrench (dual position + force channels) ──
                 if args.send_force:
                     wrench6 = np.zeros(6, dtype=np.float32)
                     wrench6[:min(6, len(f_cmd_np))] = f_cmd_np[:6]
@@ -1392,7 +1392,7 @@ def run_act(ral, args):
             print(f"[executor] stopped. achieved ≈ {hz:.0f} Hz "
                   f"(target {args.interp_hz:.0f} Hz)"
                   + ("" if hz >= 0.8 * args.interp_hz else
-                     "  ⚠️ 明显低于目标, 考虑降低 --interp_hz 或在中间件层做插值"))
+                     "  ⚠️ Significantly below target, consider lowering --interp_hz or interpolating at middleware level"))
             outlier_pct = 100.0 * cf_outlier_count / max(1, step_idx)
             print(f"[STATS] CF outliers (clipped): {cf_outlier_count}/{step_idx} "
                   f"= {outlier_pct:.1f}% "
@@ -1478,26 +1478,26 @@ def main():
     p.add_argument("--cf_dim", type=int, default=None)
     p.add_argument("--max_cf_age", type=float, default=0.5)
     p.add_argument("--action_cf_dim", type=int, default=None,
-                   help="动作中 f_cmd 维度; 默认从 stats/train_config 读取")
+                   help="Dimension of f_cmd in action; defaults to reading from stats/train_config")
     p.add_argument("--send_force", action="store_true",
-                   help="把预测的 f_cmd 通过 body/servo_cf 下发到 PSM (bilateral 力通道)")
+                   help="Send predicted f_cmd to PSM via body/servo_cf (bilateral force channel)")
     p.add_argument("--force_gain", type=float, default=1.0,
-                   help="f_cmd 下发前的增益 (逐步上调,先 0 → 0.5 → 1.0)")
+                   help="Gain before sending f_cmd (ramp up gradually: 0 -> 0.5 -> 1.0)")
     p.add_argument("--force_cmd_clip", type=float, default=5.0,
-                   help="f_cmd 每个分量的安全限幅 (N / N·m); 0 表示不限幅")
+                   help="Safety limit for each f_cmd component (N / N*m); 0 means no limit")
     p.add_argument("--zero_torque_cmd", action="store_true",
-                   help="将 f_cmd 的力矩分量清零 (与 dvrk_bila_teleop 行为一致)")
+                   help="Zero out torque components of f_cmd (consistent with dvrk_bila_teleop behavior)")
     p.add_argument("--interp_hz", type=float, default=0.0,
-                   help="高频执行线程目标频率 (如 1000)。0 = 关闭, 逐步直发。"
-                        "方案1: 步间线性插值上采样; 方案2 (force_substeps>0): "
-                        "位置插值 + 力剖面回放")
+                   help="High-rate executor thread target frequency (e.g. 1000). 0 = disabled, direct step dispatch. "
+                        "Scheme 1: Linear interpolation upsampling between steps; Scheme 2 (force_substeps>0): "
+                        "Position interpolation + force profile playback")
     p.add_argument("--interp_mode", choices=["linear", "hold"], default="linear",
-                   help="方案1 力通道插值方式: linear=线性, hold=零阶保持")
+                   help="Scheme 1 force channel interpolation mode: linear=Linear, hold=Zero-order hold")
     p.add_argument("--force_substeps", type=int, default=None,
-                   help="方案2: 每步 K 个力子步; 默认从 stats/train_config 读取")
+                   help="Scheme 2: K force substeps per step; defaults to reading from stats/train_config")
     p.add_argument("--send_jv", action="store_true",
-                   help="executor 同时下发速度前馈 servo_jv = (q1-q0)/dt "
-                        "(复原 teleop 的 servo_cv 通道; 需 crtk 支持)")
+                   help="Executor also sends velocity feedforward servo_jv = (q1-q0)/dt "
+                        "(recreates teleop servo_cv channel; requires crtk support)")
     p.add_argument("--no_cf", action="store_true",
                    help="Force-disable cf usage (legacy ckpts only).")
 

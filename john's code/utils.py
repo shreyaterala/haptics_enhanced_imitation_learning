@@ -24,9 +24,9 @@ def _find_episode(dataset_dir, episode_id):
 
 def _force_label_key(root):
     """
-    动作里 f_cmd 的标签来源(按优先级):
-      1. /action_cf     — teleop 采集时记录的 force_goal(推荐,即 servo_cf 实际发送的 wrench)
-      2. /measured_cf   — 外力传感器/估计,退而求其次(近似监督)
+    Label sources for f_cmd in action (by priority):
+      1. /action_cf     — force_goal recorded during teleop (recommended, actual wrench sent by servo_cf)
+      2. /measured_cf   — external force sensor/estimate, secondary fallback (approximate supervision)
     """
     if '/action_cf' in root:
         return '/action_cf'
@@ -35,9 +35,9 @@ def _force_label_key(root):
 
 class EpisodicDataset(torch.utils.data.Dataset):
     """
-    Bilateral 版:
-      观测: qpos (state_dim), qvel (state_dim), cf (cf_dim), images
-      动作: [q_cmd (state_dim) | f_cmd (action_cf_dim)]  → action_dim
+    Bilateral version:
+      Observations: qpos (state_dim), qvel (state_dim), cf (cf_dim), images
+      Action: [q_cmd (state_dim) | f_cmd (action_cf_dim)]  -> action_dim
     """
     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats,
                  state_dim, chunk_size, cf_dim, action_cf_dim, cf_clip=None,
@@ -51,7 +51,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.chunk_size    = chunk_size
         self.cf_dim        = cf_dim
         self.action_cf_dim = action_cf_dim
-        # 方案2: K>0 时每步动作的力部分 = K 个子步展平 (K * action_cf_dim)
+        # Scheme 2: when K > 0, force component of each step = K substeps flattened (K * action_cf_dim)
         self.force_substeps = int(force_substeps)
         f_total = action_cf_dim * max(self.force_substeps, 1)
         self.action_dim    = state_dim + f_total
@@ -83,8 +83,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
             if self.force_substeps > 0:
                 fkey = '/action_cf_hi'
                 assert fkey in root, \
-                    (f"{dataset_path}: force_substeps={self.force_substeps} 需要 "
-                     f"/action_cf_hi (先跑 tools/build_force_substeps.py)")
+                    (f"{dataset_path}: force_substeps={self.force_substeps} requires "
+                     f"/action_cf_hi (run tools/build_force_substeps.py first)")
                 assert root[fkey].shape[1] >= self.force_substeps, \
                     f"/action_cf_hi K={root[fkey].shape[1]} < {self.force_substeps}"
             else:
@@ -108,14 +108,14 @@ class EpisodicDataset(torch.utils.data.Dataset):
             for cam_name in self.camera_names:
                 image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
 
-            # 动作序列: q_cmd 与 f_cmd 使用相同的起点索引,保证逐时刻对齐
+            # Action sequence: q_cmd and f_cmd share same start index for step-by-step alignment
             if is_sim:
                 a_start = start_ts
             else:
                 a_start = max(0, start_ts - 1)
             q_cmd  = root['/action'][a_start:episode_len, :self.state_dim]
             if self.force_substeps > 0:
-                # (T', K, af_dim) → 展平 (T', K*af_dim)
+                # (T', K, af_dim) -> flatten (T', K*af_dim)
                 f_hi  = root[fkey][a_start:episode_len,
                                    :self.force_substeps, :self.action_cf_dim]
                 f_cmd = f_hi.reshape(f_hi.shape[0], -1)
@@ -147,14 +147,14 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
         image_data = torch.einsum('k h w c -> k c h w', image_data)
 
-        # ── 归一化 ───────────────────────────────────────────────────
+        # ── Normalization ───────────────────────────────────────────────────
         image_data  = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data   = (qpos_data   - self.norm_stats["qpos_mean"])   / self.norm_stats["qpos_std"]
         qvel_data   = (qvel_data   - self.norm_stats["qvel_mean"])   / self.norm_stats["qvel_std"]
         cf_data     = (cf_data     - self.norm_stats["cf_mean"])     / self.norm_stats["cf_std"]
 
-        # ── cf clip(只作用于观测端的力,不动动作标签)─────────────
+        # ── cf clip (applies only to observation force, not action labels) ──
         if self.cf_clip is not None:
             pre_clip = cf_data
             cf_data  = torch.clamp(cf_data, -self.cf_clip, self.cf_clip)
@@ -169,8 +169,8 @@ def get_norm_stats(dataset_dir, num_episodes, state_dim, cf_dim, action_cf_dim,
                    cf_clip=3.0, force_substeps=0):
     all_qpos_data   = []
     all_qvel_data   = []
-    all_action_data = []   # 只放 q_cmd 部分; f_cmd 通道统计单独算再平铺
-    all_fcmd_data   = []   # (N, af_dim) 力通道样本 (substeps 时展开到子步级)
+    all_action_data = []   # Holds only q_cmd; f_cmd channel stats computed separately then tiled
+    all_fcmd_data   = []   # (N, af_dim) force channel samples (expanded to substep level when using substeps)
     all_cf_data     = []
 
     force_key_used = None
@@ -181,14 +181,14 @@ def get_norm_stats(dataset_dir, num_episodes, state_dim, cf_dim, action_cf_dim,
             if force_substeps > 0:
                 fkey = '/action_cf_hi'
                 assert fkey in root, \
-                    f"{dataset_path}: 缺 /action_cf_hi (先跑 tools/build_force_substeps.py)"
+                    f"{dataset_path}: missing /action_cf_hi (run tools/build_force_substeps.py first)"
             else:
                 fkey = _force_label_key(root)
             if force_key_used is None:
                 force_key_used = fkey
                 print(f'[get_norm_stats] f_cmd label source: {fkey}'
                       + ('' if fkey in ('/action_cf', '/action_cf_hi')
-                         else '  (⚠️ 没找到 /action_cf,退化用 measured_cf 作为力标签)'))
+                         else '  (⚠️ /action_cf not found, falling back to measured_cf as force label)'))
             qpos   = root['/observations/qpos'][()]
             qvel   = root['/observations/qvel'][()]
             action = root['/action'][()]
@@ -198,7 +198,7 @@ def get_norm_stats(dataset_dir, num_episodes, state_dim, cf_dim, action_cf_dim,
         qpos, qvel, action, cf, f_cmd = qpos[:T], qvel[:T], action[:T], cf[:T], f_cmd[:T]
 
         if force_substeps > 0:
-            # (T, K, af) → 子步级样本 (T*K, af): 通道统计
+            # (T, K, af) -> substep-level samples (T*K, af): channel statistics
             f_samples = f_cmd[:, :force_substeps, :action_cf_dim].reshape(-1, action_cf_dim)
         else:
             f_samples = f_cmd[:, :action_cf_dim]
@@ -215,15 +215,15 @@ def get_norm_stats(dataset_dir, num_episodes, state_dim, cf_dim, action_cf_dim,
     all_fcmd_data   = torch.cat(all_fcmd_data,   dim=0)
     all_cf_data     = torch.cat(all_cf_data,     dim=0)
 
-    # q_cmd 部分: 沿用 0.1 std 下限
+    # q_cmd portion: retains 0.1 std floor
     qcmd_mean = all_action_data.mean(dim=0, keepdim=True)
     qcmd_std  = torch.clip(all_action_data.std(dim=0, keepdim=True), 0.1, np.inf)
 
-    # f_cmd 部分: 通道级统计, 下限 1e-2 (力幅值可能远小于 0.1 N)
+    # f_cmd portion: channel-level stats, floor 1e-2 (force amplitude may be much smaller than 0.1 N)
     fcmd_mean = all_fcmd_data.mean(dim=0, keepdim=True)
     fcmd_std  = torch.clip(all_fcmd_data.std(dim=0, keepdim=True), 1e-2, np.inf)
 
-    # substeps 时把通道 stats 平铺 K 次, 保证每个子步同一通道用同一归一化
+    # When using substeps, tile channel stats K times to ensure identical normalization per channel across substeps
     K_rep = max(int(force_substeps), 1)
     action_mean = torch.cat([qcmd_mean, fcmd_mean.repeat(1, K_rep)], dim=1)
     action_std  = torch.cat([qcmd_std,  fcmd_std.repeat(1, K_rep)],  dim=1)
@@ -283,7 +283,7 @@ def load_data(dataset_dir, num_episodes, camera_names,
     print(f'Using first {state_dim} dimensions of qpos/qvel/action')
     print(f'Using first {cf_dim} dimensions of measured_cf (obs)')
     if force_substeps > 0:
-        print(f'方案2 substeps: K={force_substeps} → '
+        print(f'Scheme 2 substeps: K={force_substeps} -> '
               f'Action = q_cmd({state_dim}) + f_cmd({force_substeps}×{action_cf_dim}='
               f'{f_total}) → action_dim {state_dim + f_total}')
     else:

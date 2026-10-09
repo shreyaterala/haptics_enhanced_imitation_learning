@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""纯标准库 V4L2 探测/设置工具（无需 sudo、无需 v4l-utils、不依赖 OpenCV）。
+"""Pure standard-library V4L2 probe/configuration tool (no sudo, no v4l-utils, no OpenCV dependency).
 
-用法:
-  python3 v4l2_probe.py /dev/video0                    # 列出格式、分辨率、帧率、控制项
-  python3 v4l2_probe.py /dev/video0 --fix-framerate    # exposure_auto_priority=0，禁止驱动为曝光降帧
+Usage:
+  python3 v4l2_probe.py /dev/video0                    # List formats, resolutions, frame rates, controls
+  python3 v4l2_probe.py /dev/video0 --fix-framerate    # exposure_auto_priority=0, prevent driver from dropping FPS for exposure
   python3 v4l2_probe.py /dev/video0 --manual-exposure 300
-  python3 v4l2_probe.py /dev/video0 --auto-exposure    # 恢复自动曝光
-  python3 v4l2_probe.py /dev/video0 --set 0x009A0903=0 # 手动设任意控制项
+  python3 v4l2_probe.py /dev/video0 --auto-exposure    # Restore auto exposure
+  python3 v4l2_probe.py /dev/video0 --set 0x009A0903=0 # Manually set arbitrary control
 """
 import argparse
 import errno
@@ -35,7 +35,7 @@ CTRL_TYPE_NAMES = {
     9: "integer_menu",
 }
 
-# 与帧率相关的控制项优先显示
+# Prioritize controls related to frame rate
 CONTROLS = [
     ("brightness", 0x00980900),
     ("contrast", 0x00980901),
@@ -113,7 +113,7 @@ def enum_frame_intervals(fd, pixfmt, width, height):
             # stepwise: min(num,den), max(num,den), step(num,den)
             min_num, min_den, max_num, max_den = vals[5], vals[6], vals[7], vals[8]
             if min_num and max_num:
-                out.append(min_den / min_num)   # 间隔最小 = 帧率最高
+                out.append(min_den / min_num)   # Smallest interval = highest frame rate
                 out.append(max_den / max_num)
             break
     return out
@@ -151,113 +151,113 @@ def set_control(fd, cid, value):
     try:
         fcntl.ioctl(fd, VIDIOC_S_CTRL, buf)
     except OSError as exc:
-        reason = "设备不支持该控制项" if exc.errno == errno.EINVAL else exc.strerror
-        print(f"  设置 0x{cid:08X} = {value} 失败: {reason}")
+        reason = "Device does not support this control" if exc.errno == errno.EINVAL else exc.strerror
+        print(f"  Setting 0x{cid:08X} = {value} failed: {reason}")
         return False
     actual = get_control(fd, cid)
-    print(f"  设置 0x{cid:08X} = {value} 成功（回读 {actual}）")
+    print(f"  Setting 0x{cid:08X} = {value} succeeded (read back {actual})")
     return True
 
 
 def report(fd, device):
-    print(f"设备: {device}\n")
+    print(f"Device: {device}\n")
 
     formats = enum_formats(fd)
     if not formats:
-        print("没有枚举到任何采集格式 —— 这个节点可能是 metadata 节点，"
-              "换 by-id 里 index 更小的那个。")
+        print("No capture formats enumerated — this node may be a metadata node, "
+              "try the one with smaller index in by-id.")
         return
 
-    print("=== 支持的格式 / 分辨率 / 帧率 ===")
+    print("=== Supported Formats / Resolutions / Frame Rates ===")
     for fmt in formats:
-        tag = "压缩" if fmt["compressed"] else "未压缩"
+        tag = "compressed" if fmt["compressed"] else "uncompressed"
         print(f"\n[{fmt['fourcc']}] {fmt['description']} ({tag})")
         sizes = enum_frame_sizes(fd, fmt["pixelformat"])
         if not sizes:
-            print("  （驱动未枚举分辨率）")
+            print("  (Driver did not enumerate resolutions)")
             continue
         for width, height, kind in sizes[:24]:
             fps_list = enum_frame_intervals(fd, fmt["pixelformat"], width, height)
             if fps_list:
                 shown = ", ".join(f"{f:g}" for f in sorted(fps_list, reverse=True))
             else:
-                shown = "未枚举"
-            suffix = "  <-- 步进范围" if kind == "stepwise" else ""
+                shown = "Not enumerated"
+            suffix = "  <-- Stepwise range" if kind == "stepwise" else ""
             print(f"  {width:>5}x{height:<5}  fps: {shown}{suffix}")
         if len(sizes) > 24:
-            print(f"  …还有 {len(sizes) - 24} 组分辨率未显示")
+            print(f"  ...and {len(sizes) - 24} more resolution sets not shown")
 
-    print("\n=== 与帧率/亮度相关的控制项 ===")
+    print("\n=== Frame Rate / Exposure Related Controls ===")
     for label, cid in CONTROLS:
         info = query_control(fd, cid)
         if info is None:
-            print(f"  {label:<24} 不支持")
+            print(f"  {label:<24} Not supported")
             continue
         current = get_control(fd, cid)
         ctype = CTRL_TYPE_NAMES.get(info["type"], str(info["type"]))
         flags = []
         if info["disabled"]:
-            flags.append("当前不可用")
+            flags.append("Currently unavailable")
         if info["read_only"]:
-            flags.append("只读")
+            flags.append("Read-only")
         extra = ("  [" + ", ".join(flags) + "]") if flags else ""
-        print(f"  {label:<24} 当前={current}  范围={info['min']}..{info['max']}"
-              f"  默认={info['default']}  类型={ctype}"
+        print(f"  {label:<24} Current={current}  Range={info['min']}..{info['max']}"
+              f"  Default={info['default']}  Type={ctype}"
               f"  id=0x{cid:08X}{extra}")
 
-    print("\n关注两点：MJPG 那一块在 640x480 有没有 30；"
-          "以及 exposure_auto_priority 当前是不是 1。")
+    print("\nKey checkpoints: check if MJPG at 640x480 supports 30 fps; "
+          "and whether exposure_auto_priority is currently 1.")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="纯标准库 V4L2 探测/设置工具")
+    ap = argparse.ArgumentParser(description="Pure standard-library V4L2 probe/configuration tool")
     ap.add_argument("device", nargs="?", default="/dev/video0")
     ap.add_argument("--fix-framerate", action="store_true",
-                    help="exposure_auto_priority=0，禁止驱动为了曝光而降帧")
+                    help="exposure_auto_priority=0, prevent driver from dropping FPS for exposure")
     ap.add_argument("--manual-exposure", type=int, metavar="VALUE",
-                    help="锁定手动曝光并设置 exposure_absolute")
+                    help="Lock manual exposure and set exposure_absolute")
     ap.add_argument("--auto-exposure", action="store_true",
-                    help="恢复自动曝光")
+                    help="Restore auto exposure")
     ap.add_argument("--set", action="append", default=[], metavar="ID=VAL",
-                    help="设置任意控制项，如 --set 0x009A0903=0")
+                    help="Set arbitrary control, e.g. --set 0x009A0903=0")
     args = ap.parse_args()
 
     if not os.path.exists(args.device):
-        print(f"设备不存在: {args.device}")
+        print(f"Device does not exist: {args.device}")
         return 1
 
     try:
         fd = os.open(args.device, os.O_RDWR)
     except OSError as exc:
-        print(f"打开 {args.device} 失败: {exc.strerror}"
-              f"（检查是否在 video 组、设备是否被占用）")
+        print(f"Failed to open {args.device}: {exc.strerror}"
+              f" (check video group permissions or if device is in use)")
         return 1
 
     try:
         changed = False
 
         if args.auto_exposure:
-            print("恢复自动曝光:")
+            print("Restoring auto exposure:")
             set_control(fd, 0x009A0901, EXPOSURE_AUTO_MODE)
             changed = True
 
         if args.manual_exposure is not None:
-            print("锁定手动曝光:")
+            print("Locking manual exposure:")
             set_control(fd, 0x009A0901, EXPOSURE_MANUAL_MODE)
             set_control(fd, 0x009A0902, args.manual_exposure)
             changed = True
 
         if args.fix_framerate:
-            print("禁止驱动为曝光降帧:")
+            print("Preventing driver from dropping FPS for exposure:")
             set_control(fd, 0x009A0903, 0)
             changed = True
 
         for item in args.set:
             if "=" not in item:
-                print(f"忽略无法解析的 --set 参数: {item}")
+                print(f"Ignoring unparseable --set parameter: {item}")
                 continue
             key, val = item.split("=", 1)
-            print(f"设置 {key}:")
+            print(f"Setting {key}:")
             set_control(fd, int(key, 0), int(val, 0))
             changed = True
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""无需 sudo 的 USB 摄像头 ROS2 发布节点。
-发布: <ns>/image_raw, <ns>/image_raw/compressed, <ns>/camera_info
-用法: python3 wrist_cam_node.py --ros-args -p video_device:=/dev/video0
+"""ROS2 publisher node for USB camera without requiring sudo.
+Publishes: <ns>/image_raw, <ns>/image_raw/compressed, <ns>/camera_info
+Usage: python3 wrist_cam_node.py --ros-args -p video_device:=/dev/video0
 """
 import os
 import sys
@@ -38,14 +38,14 @@ class WristCam(Node):
         self.cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
         if not self.cap.isOpened():
             raise RuntimeError(
-                f"打开 {self.device} 失败：检查路径是否存在、当前用户是否在 video 组")
+                f"Failed to open {self.device}: check if path exists and current user is in video group")
 
         fourcc = str(p("fourcc").value)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(p("image_width").value))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(p("image_height").value))
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # 降低排队延迟
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Reduce queuing latency
 
         got_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         got_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -69,11 +69,11 @@ class WristCam(Node):
         msg.width, msg.height = width, height
         msg.distortion_model = "plumb_bob"
         if not path:
-            self.get_logger().warn("未提供 camera_info_file，内参为空（标定前正常）")
+            self.get_logger().warn("camera_info_file not provided, intrinsics empty (normal before calibration)")
             return msg
         path = os.path.expanduser(path)
         if not os.path.isfile(path):
-            self.get_logger().warn(f"找不到标定文件 {path}，内参为空")
+            self.get_logger().warn(f"Calibration file {path} not found, intrinsics empty")
             return msg
         with open(path, "r") as f:
             c = yaml.safe_load(f)
@@ -84,7 +84,7 @@ class WristCam(Node):
         msg.k = list(c["camera_matrix"]["data"])
         msg.r = list(c["rectification_matrix"]["data"])
         msg.p = list(c["projection_matrix"]["data"])
-        self.get_logger().info(f"已加载内参: {path}")
+        self.get_logger().info(f"Loaded intrinsics: {path}")
         return msg
 
     def tick(self):
@@ -92,7 +92,7 @@ class WristCam(Node):
         if not ok:
             self.n_dropped += 1
             if self.n_dropped % 30 == 1:
-                self.get_logger().warn(f"取帧失败 x{self.n_dropped}")
+                self.get_logger().warn(f"Failed to grab frame x{self.n_dropped}")
             return
 
         stamp = self.get_clock().now().to_msg()

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-方案 1 · 数据端: 把高频 (如 1000 Hz) 采集的 episode 降采样到策略频率 (如 30 Hz)。
+Scheme 1 · Data pipeline: downsample high-frequency (e.g. 1000 Hz) recorded episodes to policy frequency (e.g. 30 Hz).
 
-核心: 连续信号 (qpos/qvel/action/measured_cf/action_cf...) 先做零相位低通
-(Butterworth + filtfilt, 截止 = 0.45 × 目标频率, 防混叠 — 对力信号尤其重要,
-直接抽点会把高频接触振动折叠成假的低频分量), 再在均匀目标时间栅格上线性插值。
-图像不滤波, 按最近时间戳选帧。
+Core: continuous signals (qpos/qvel/action/measured_cf/action_cf...) undergo zero-phase low-pass filtering
+(Butterworth + filtfilt, cutoff = 0.45 * target_fps for anti-aliasing — critical for force signals;
+direct subsampling would alias high-frequency contact vibrations into false low-frequency components), then linearly interpolate onto uniform target time grid.
+Images are not filtered; frames are selected by nearest timestamp.
 
-用法:
+Usage:
     python tools/downsample_hdf5.py \
         --input_dir  ./data/dvrk_dataset_1khz \
         --output_dir ./data/dvrk_dataset_30hz \
         --target_fps 30
 
-输入 episode 要求含 /timestamp (秒, 单调)。没有的话用 --source_hz 假定均匀采样。
+Input episodes must contain /timestamp (seconds, monotonic). If missing, use --source_hz to assume uniform sampling.
 """
 import argparse
 import os
@@ -28,7 +28,7 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
-# 需要"滤波+重采样"的连续信号键 (存在才处理)
+# Continuous signal keys requiring "filtering + resampling" (processed only if present)
 SIGNAL_KEYS = [
     '/observations/qpos',
     '/observations/qvel',
@@ -39,18 +39,18 @@ SIGNAL_KEYS = [
     '/arm_effort',
     '/joint_force',
 ]
-# 图像组: 按最近时间戳选帧
+# Image groups: select frame by nearest timestamp
 IMAGE_GROUP = '/observations/images'
 
 
 def lowpass(x, fs, cutoff, order=4):
-    """零相位低通; x: (T, D)。scipy 不可用时退化为滑动平均。"""
+    """Zero-phase low-pass filter; x: (T, D). Falls back to moving average if scipy is unavailable."""
     if HAS_SCIPY:
         nyq = 0.5 * fs
         wn = min(cutoff / nyq, 0.99)
         b, a = butter(order, wn)
         return filtfilt(b, a, x, axis=0)
-    # fallback: 简单滑动平均 (窗口 ≈ fs / (2*cutoff))
+    # fallback: simple moving average (window ≈ fs / (2*cutoff))
     win = max(1, int(round(fs / (2.0 * cutoff))))
     if win <= 1:
         return x
@@ -71,7 +71,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
                     n = f[k].shape[0]
                     break
             assert source_hz is not None, \
-                "episode 没有 /timestamp, 必须给 --source_hz"
+                "episode missing /timestamp, --source_hz must be provided"
             t_src = np.arange(n, dtype=np.float64) / float(source_hz)
 
         fs = (len(t_src) - 1) / (t_src[-1] - t_src[0])
@@ -84,7 +84,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
               f"→ dst {target_fps} Hz, {n_out} frames (low-pass {cutoff:.1f} Hz)")
 
         with h5py.File(out_path, 'w') as g:
-            # 属性照抄 + 记录降采样信息
+            # Copy attributes + record downsampling metadata
             for k, v in f.attrs.items():
                 g.attrs[k] = v
             g.attrs['downsampled_from_hz'] = float(fs)
@@ -93,7 +93,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
 
             g.create_dataset('timestamp', data=t_dst)
 
-            # ── 连续信号: 滤波 + 插值 ─────────────────────────────
+            # ── Continuous signals: filter + interpolate ─────────────────────────
             for key in SIGNAL_KEYS:
                 if key not in f:
                     continue
@@ -108,7 +108,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
                 grp = g.require_group(grp_path) if grp_path else g
                 grp.create_dataset(name, data=y.astype(np.float32), dtype='f4')
 
-            # ── 图像: 最近帧 ──────────────────────────────────────
+            # ── Images: nearest frame ──────────────────────────────────────────
             if IMAGE_GROUP in f:
                 img_grp_out = g.require_group(IMAGE_GROUP)
                 for cam in f[IMAGE_GROUP]:
@@ -116,7 +116,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
                     T = min(len(imgs), len(t_src))
                     idx = np.searchsorted(t_src[:T], t_dst)
                     idx = np.clip(idx, 0, T - 1)
-                    # searchsorted 给右邻, 和左邻比谁更近
+                    # searchsorted returns right neighbor; compare distance to left neighbor
                     left = np.clip(idx - 1, 0, T - 1)
                     pick = np.where(
                         np.abs(t_src[left] - t_dst) <= np.abs(t_src[idx] - t_dst),
@@ -125,7 +125,7 @@ def resample_episode(in_path, out_path, target_fps, source_hz=None,
                         cam, data=imgs[()][pick],
                         dtype='u1', compression='gzip', compression_opts=2)
 
-            # ── 其余数据集/组原样拷贝 (source_timestamps 等按需保留) ──
+            # ── Copy remaining datasets/groups as-is (e.g., source_timestamps) ──
             skip = set(SIGNAL_KEYS) | {'/timestamp', IMAGE_GROUP}
 
             def keep(name):
@@ -149,9 +149,9 @@ def main():
     ap.add_argument('--output_dir', required=True)
     ap.add_argument('--target_fps', type=float, default=30.0)
     ap.add_argument('--source_hz',  type=float, default=None,
-                    help='episode 无 /timestamp 时假定的均匀采样率 (如 1000)')
+                    help='Assumed uniform sampling rate when episode lacks /timestamp (e.g. 1000)')
     ap.add_argument('--cutoff_ratio', type=float, default=0.45,
-                    help='低通截止 = cutoff_ratio × target_fps (< 0.5 防混叠)')
+                    help='Low-pass cutoff = cutoff_ratio * target_fps (< 0.5 for anti-aliasing)')
     args = ap.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -159,7 +159,7 @@ def main():
     if not files:
         raise FileNotFoundError(f"No episode_*.hdf5 in {args.input_dir}")
     if not HAS_SCIPY:
-        print("[WARN] scipy 不可用, 退化为滑动平均抗混叠 (建议 pip install scipy)")
+        print("[WARN] scipy unavailable, falling back to moving average anti-aliasing (recommended: pip install scipy)")
 
     for p in files:
         out = os.path.join(args.output_dir, os.path.basename(p))

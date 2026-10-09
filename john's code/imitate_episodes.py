@@ -51,34 +51,34 @@ def main(args):
     num_epochs       = args['num_epochs']
 
     # ------------------------------------------------------------------
-    # state_dim: 命令行 --state_dim N 指定使用前 N 维；默认 STATE_DIM
+    # state_dim: CLI --state_dim N specifies using first N dims; defaults to STATE_DIM
     # ------------------------------------------------------------------
     state_dim = args.get('state_dim') or STATE_DIM
     assert 1 <= state_dim <= STATE_DIM, \
-        f'--state_dim 必须在 1 ~ {STATE_DIM} 之间，当前值: {state_dim}'
+        f'--state_dim must be between 1 and {STATE_DIM}, got: {state_dim}'
 
-    # ── bilateral: 动作 = [q_cmd | f_cmd] ────────────────────────────
+    # ── bilateral: action = [q_cmd | f_cmd] ────────────────────────────
     action_cf_dim = int(args.get('action_cf_dim')
                         if args.get('action_cf_dim') is not None else CF_DIM)
-    # 方案2: K>0 时 f_cmd 展平 K 个 1kHz 子步
+    # Scheme 2: when K > 0, f_cmd flattens K 1kHz substeps
     force_substeps = int(args.get('force_substeps') or 0)
     action_f_total = action_cf_dim * max(force_substeps, 1)
     action_dim = state_dim + action_f_total
     force_loss_weight = float(args.get('force_loss_weight')
                               if args.get('force_loss_weight') is not None else 1.0)
 
-    print(f'[INFO] 训练维度: 前 {state_dim} 维（数据集原始维度: {STATE_DIM}）')
-    print(f'[INFO] 网络输入 token: qpos {state_dim} + qvel {state_dim} + force {CF_DIM} (各自独立投影)')
+    print(f'[INFO] Training dimension: first {state_dim} dims (dataset raw dimension: {STATE_DIM})')
+    print(f'[INFO] Network input tokens: qpos {state_dim} + qvel {state_dim} + force {CF_DIM} (projected independently)')
     if force_substeps > 0:
-        print(f'[INFO] 方案2 substeps: K={force_substeps}')
-        print(f'[INFO] 网络输出: action_dim {action_dim} = '
+        print(f'[INFO] Scheme 2 substeps: K={force_substeps}')
+        print(f'[INFO] Network output: action_dim {action_dim} = '
               f'q_cmd {state_dim} + f_cmd {force_substeps}×{action_cf_dim}')
     else:
-        print(f'[INFO] 网络输出: action_dim {action_dim} = q_cmd {state_dim} + f_cmd {action_cf_dim}')
+        print(f'[INFO] Network output: action_dim {action_dim} = q_cmd {state_dim} + f_cmd {action_cf_dim}')
     print(f'[INFO] force_loss_weight: {force_loss_weight}')
 
-    # cf_clip: z-score clip range. 训练时存进 stats,推理时从 stats 读取,
-    # 保证训练和推理永远一致
+    # cf_clip: z-score clip range. Saved in stats during training, loaded from stats during inference,
+    # ensuring train/eval consistency
     cf_clip = float(args.get('cf_clip') if args.get('cf_clip') is not None else 3.0)
     print(f'[INFO] CF z-score clip: ±{cf_clip}')
 
@@ -168,9 +168,9 @@ def main(args):
         exit()
 
     # ----------------------------------------------------------------
-    # 把 cf_clip 传给 load_data; load_data 会:
-    #   1) 在 get_norm_stats 里把它存进 norm_stats['cf_clip']
-    #   2) 在 EpisodicDataset 里应用到每一帧的 cf z-score 之后
+    # Pass cf_clip to load_data; load_data will:
+    #   1) Store it in norm_stats['cf_clip'] in get_norm_stats
+    #   2) Apply it after cf z-score normalization in EpisodicDataset
     # ----------------------------------------------------------------
     train_dataloader, val_dataloader, norm_stats, _ = load_data(
         dataset_dir, num_episodes, camera_names,
@@ -186,7 +186,7 @@ def main(args):
     if not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
 
-    # 保存 stats (含 cf_mean/std/clip) - run 脚本会从这里读所有归一化参数
+    # Save stats (including cf_mean/std/clip) - run script reads all normalization params here
     stats_path = os.path.join(ckpt_dir, 'dataset_stats.pkl')
     with open(stats_path, 'wb') as f:
         pickle.dump(norm_stats, f)
@@ -262,7 +262,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
-    # ── 从 stats 读 cf_clip,保证和训练时一致 ─────────────────────
+    # ── Read cf_clip from stats to ensure consistency with training ─────────
     cf_clip = float(stats.get('cf_clip', 0.0))
     if cf_clip > 0:
         print(f'[eval_bc] CF clip from stats: ±{cf_clip}')
@@ -317,11 +317,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
             plt.ion()
 
         if temporal_agg:
-            # bilateral: action = [q_cmd | f_cmd], buffer 使用 action_dim
+            # bilateral: action = [q_cmd | f_cmd], buffer uses action_dim
             all_time_actions = torch.zeros(
                 [max_timesteps, max_timesteps + num_queries, action_dim]).cuda()
 
-        # ── 方案 B: qpos 和 cf 各自独立保存 ─────────────────────────
+        # ── Scheme B: save qpos and cf independently ─────────────────────────
         qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
         cf_history   = torch.zeros((1, max_timesteps, cf_dim)).cuda()
         image_list, qpos_list, target_qpos_list, rewards = [], [], [], []
@@ -338,12 +338,12 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
                 qpos_numpy = np.array(obs['qpos'])
                 qvel_numpy = np.array(obs.get('qvel', np.zeros_like(qpos_numpy)))
-                cf_numpy   = np.array(obs['cf'])    # ← env 字段名按你 dvrk env 实际叫什么
+                cf_numpy   = np.array(obs['cf'])    # ← adapt field name to your actual dvrk env name
                 qpos_norm  = pre_process(qpos_numpy)
                 qvel_norm  = pre_process_qvel(qvel_numpy)
-                cf_norm    = pre_process_cf(cf_numpy)   # 含 clip
+                cf_norm    = pre_process_cf(cf_numpy)   # includes clipping
 
-                # bilateral: qpos / qvel / cf 各自独立送进网络
+                # bilateral: qpos / qvel / cf passed independently into network
                 qpos = torch.from_numpy(qpos_norm).float().cuda().unsqueeze(0)
                 qvel = torch.from_numpy(qvel_norm).float().cuda().unsqueeze(0)
                 cf   = torch.from_numpy(cf_norm).float().cuda().unsqueeze(0)
@@ -373,8 +373,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
                 raw_action  = raw_action.squeeze(0).cpu().numpy()
                 action      = post_process(raw_action)
-                target_qpos = action[:state_dim]    # bilateral: 前 state_dim 维是位置指令
-                target_cf   = action[state_dim:]    # 剩余是 f_cmd (仿真 env 一般用不上)
+                target_qpos = action[:state_dim]    # bilateral: first state_dim dims are position command
+                target_cf   = action[state_dim:]    # remainder is f_cmd (typically unused in sim env)
 
                 ts = env.step(target_qpos)
 
@@ -420,7 +420,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
 
 def forward_pass(data, policy):
-    # bilateral: DataLoader 返回 6 元组
+    # bilateral: DataLoader returns 6-tuple
     image_data, qpos_data, qvel_data, cf_data, action_data, is_pad = data
     image_data, qpos_data, qvel_data, cf_data, action_data, is_pad = (
         image_data.cuda(), qpos_data.cuda(), qvel_data.cuda(), cf_data.cuda(),
@@ -441,23 +441,23 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
-    # ── Sanity check: 第一个 batch 的维度对不对 (方案 B) ─────────
+    # ── Sanity check: verify dimensions of first batch (Scheme B) ──────────
     try:
         first_batch = next(iter(train_dataloader))
         img_b, qpos_b, qvel_b, cf_b, act_b, pad_b = first_batch
         print(f'[sanity] batch shapes:')
         print(f'  image_data:  {tuple(img_b.shape)}')
-        print(f'  qpos_data:   {tuple(qpos_b.shape)}  (期望: B, {config["state_dim"]})')
-        print(f'  qvel_data:   {tuple(qvel_b.shape)}  (期望: B, {config["state_dim"]})')
-        print(f'  cf_data:     {tuple(cf_b.shape)}    (期望: B, {config["cf_dim"]})')
-        print(f'  action_data: {tuple(act_b.shape)}   (期望: B, chunk_size, {config["action_dim"]})')
+        print(f'  qpos_data:   {tuple(qpos_b.shape)}  (expected: B, {config["state_dim"]})')
+        print(f'  qvel_data:   {tuple(qvel_b.shape)}  (expected: B, {config["state_dim"]})')
+        print(f'  cf_data:     {tuple(cf_b.shape)}    (expected: B, {config["cf_dim"]})')
+        print(f'  action_data: {tuple(act_b.shape)}   (expected: B, chunk_size, {config["action_dim"]})')
         print(f'  is_pad:      {tuple(pad_b.shape)}')
         if qpos_b.shape[1] != config["state_dim"]:
-            print(f'  ⚠️  qpos_data 维度不对!应该是 {config["state_dim"]}')
+            print(f'  ⚠️  qpos_data dimension incorrect! Should be {config["state_dim"]}')
         if cf_b.shape[1] != config["cf_dim"]:
-            print(f'  ⚠️  cf_data   维度不对!应该是 {config["cf_dim"]}')
+            print(f'  ⚠️  cf_data   dimension incorrect! Should be {config["cf_dim"]}')
         if act_b.shape[2] != config["action_dim"]:
-            print(f'  ⚠️  action_data 维度不对!应该是 {config["action_dim"]} '
+            print(f'  ⚠️  action_data dimension incorrect! Should be {config["action_dim"]} '
                   f'(= q_cmd {config["state_dim"]} + f_cmd {config["action_cf_dim"]})')
     except Exception as ex:
         print(f'[sanity] check failed: {ex}')
@@ -509,7 +509,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        # epoch 0 之后,如果 dataloader 启用了 clip 命中计数,打印一次
+        # After epoch 0, print clip hit count if dataloader tracking is enabled
         if epoch == 0:
             try:
                 ds = train_dataloader.dataset
@@ -565,24 +565,24 @@ if __name__ == '__main__':
     parser.add_argument('--lr',              action='store', type=float, required=True)
 
     parser.add_argument('--state_dim', action='store', type=int, default=None,
-                        help=f'训练使用前几维数据，范围 1 ~ {STATE_DIM}，默认 = {STATE_DIM}')
+                        help=f'Number of state dimensions used for training, range 1 ~ {STATE_DIM}, default = {STATE_DIM}')
 
-    # bilateral: 动作力目标
+    # bilateral: action force target
     parser.add_argument('--action_cf_dim', action='store', type=int, default=None,
-                        help='动作中 f_cmd 的维度 (默认 = CF_DIM)。'
+                        help='Dimension of f_cmd in action (default = CF_DIM).'
                              'action_dim = state_dim + action_cf_dim')
     parser.add_argument('--force_loss_weight', action='store', type=float, default=1.0,
-                        help='f_cmd 部分 L1 损失的权重')
+                        help='Weight for f_cmd portion of L1 loss')
     parser.add_argument('--force_substeps', action='store', type=int, default=0,
-                        help='方案2: 每步动作展平 K 个高频力子步 '
-                             '(K = round(1000/policy_fps), 需先跑 '
-                             'tools/build_force_substeps.py)。0 = 关闭 (方案1)')
+                        help='Scheme 2: flatten K high-frequency force substeps per action step '
+                             '(K = round(1000/policy_fps), requires running '
+                             'tools/build_force_substeps.py first). 0 = disabled (Scheme 1)')
 
-    # CF (force sensor) 相关
+    # CF (force sensor) settings
     parser.add_argument('--cf_clip', action='store', type=float, default=3.0,
-                        help='CF z-score clip range (±cf_clip). 防止力传感器异常值'
-                             '污染力 token。默认 3.0,典型范围 2.0 ~ 5.0。'
-                             '设为 0 表示不 clip。')
+                        help='CF z-score clip range (±cf_clip). Prevents force sensor outliers'
+                             'from corrupting force tokens. Default 3.0, typical range 2.0 ~ 5.0.'
+                             'Set to 0 to disable clipping.')
 
     # for ACT
     parser.add_argument('--kl_weight',       action='store', type=int,  required=False)

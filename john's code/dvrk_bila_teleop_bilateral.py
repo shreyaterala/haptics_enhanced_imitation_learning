@@ -119,9 +119,9 @@ class teleoperation:
         self.clutch_button = crtk.joystick_button(ral, clutch_topic)
         self.clutch_button.set_callback(self.on_clutch)
 
-        # ── bilateral ACT 数据链路: 发布每周期下发的 force_goal ─────────
-        # record_dvrk_episodes.py 订阅该话题并存为 /action_cf, 作为策略
-        # 输出端 f_cmd 的监督标签。
+        # ── bilateral ACT data pipeline: publish force_goal commanded each cycle ───
+        # record_dvrk_episodes.py subscribes to this topic and saves as /action_cf, serving as the policy
+        # output f_cmd supervision label.
         self.force_goal_pub = ral.publisher('/teleop/force_goal',
                                             geometry_msgs.msg.WrenchStamped,
                                             queue_size=10)
@@ -503,7 +503,7 @@ class teleoperation:
         self.puppet.servo_cv(puppet_velocity_goal)
         self.puppet.servo_cf(force_goal)
 
-        # ── bilateral ACT: 发布 force_goal 供录制脚本记录 (/action_cf) ──
+        # ── bilateral ACT: publish force_goal for recording script (/action_cf) ──
         try:
             fg = force_goal if isinstance(force_goal, (list, tuple)) else list(force_goal)
             msg = geometry_msgs.msg.WrenchStamped()

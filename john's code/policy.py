@@ -10,9 +10,9 @@ e = IPython.embed
 class ACTPolicy(nn.Module):
     """
     Bilateral ACT:
-      输入: qpos, qvel, cf, image
-      输出: action chunk, 每步 = [q_cmd (state_dim) | f_cmd (action_cf_dim)]
-      损失: L = L1(q_cmd) + force_loss_weight * L1(f_cmd) + kl_weight * KL
+      Inputs: qpos, qvel, cf, image
+      Outputs: action chunk, each step = [q_cmd (state_dim) | f_cmd (action_cf_dim)]
+      Loss: L = L1(q_cmd) + force_loss_weight * L1(f_cmd) + kl_weight * KL
     """
     def __init__(self, args_override):
         super().__init__()
@@ -69,7 +69,7 @@ class CNNMLPPolicy(nn.Module):
         self.optimizer = optimizer
 
     def __call__(self, qpos, qvel, cf, image, actions=None, is_pad=None):
-        # 注意: CNNMLP 这里没接 qvel/force,参数留作签名兼容
+        # Note: CNNMLP does not connect qvel/force here; parameters kept for signature compatibility
         env_state = None
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])

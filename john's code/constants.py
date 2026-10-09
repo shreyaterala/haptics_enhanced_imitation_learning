@@ -58,7 +58,7 @@ SIM_TASK_CONFIGS = {
         'camera_names': ['left','wrist_1'] 
     },
     'dvrk_retraction_bilateral': {
-        'dataset_dir': DATA_DIR + '/dvrk_dataset_bilateral',   # ← 改成实际数据路径
+        'dataset_dir': DATA_DIR + '/dvrk_dataset_bilateral',   # ← Change to actual data path
         'num_episodes': 50,
         'episode_len': 200,
         'camera_names': ['left', 'wrist_1'],
@@ -76,13 +76,13 @@ DT = 0.02
 JOINT_NAMES = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
 
 # ============================================================
-# STATE_DIM = 数据集录制时的原始维度（最大值上限）
-# 训练实际使用的维度通过命令行 --state_dim N 指定（1 <= N <= STATE_DIM）
+# STATE_DIM = Raw dimension when dataset was recorded (upper bound maximum)
+# Actual dimension used for training is specified via CLI --state_dim N (1 <= N <= STATE_DIM)
 # ============================================================
 STATE_DIM = 14
 CF_DIM = 6
 
-# MuJoCo 物理初始化专用，固定16位，与 STATE_DIM 无关，不要修改
+# Reserved for MuJoCo physics initialization, fixed at 16, independent of STATE_DIM, do not modify
 START_ARM_POSE = [0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239,
                   0, -0.96, 1.16, 0, -0.3, 0, 0.02239, -0.02239]
 # ============================================================

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""纯标准库 V4L2 原始取流测速（绕开 OpenCV），并枚举驱动暴露的全部控制项。
+"""Pure standard-library V4L2 raw stream benchmark (bypassing OpenCV) and control enumeration.
 
-用法:
+Usage:
   python3 v4l2_raw_fps.py /dev/video0
   python3 v4l2_raw_fps.py /dev/video0 --fps 30 --size 640x480
   python3 v4l2_raw_fps.py /dev/video0 --fps 30 --frames 200
@@ -49,14 +49,14 @@ CTRL_TYPE_NAMES = {
     6: "class", 7: "string", 8: "bitmask", 9: "intmenu",
 }
 
-# ---- 结构体布局 --------------------------------------------------------
+# ---- Struct Layout -------------------------------------------------------
 # v4l2_format:      type(4) + pad(4) + v4l2_pix_format(48) + pad = 208
 FMT_STRUCT = "<I4x12I152x"
 # v4l2_streamparm:  type(4) + raw_data(200) = 204
 PARM_STRUCT = "<8I172x"
-# v4l2_requestbuffers: 5 字段 = 20
+# v4l2_requestbuffers: 5 fields = 20
 REQBUFS_STRUCT = "<4IB3x"
-# v4l2_buffer = 88，timecode 里有 4 个 u8 + userbits[4]
+# v4l2_buffer = 88, timecode has 4 u8s + userbits[4]
 BUF_STRUCT = "<5I4x2q2I4B4s2IQ2Ii4x"
 # v4l2_queryctrl = 68
 QUERYCTRL_STRUCT = "<2I32s4iI2I"
@@ -71,7 +71,7 @@ BUF_FIELDS = (
 
 
 def ioctl_size(code):
-    """从 ioctl 编码里取出内核期望的结构体字节数。"""
+    """Extract expected struct byte size from ioctl encoding."""
     return (code >> 16) & 0x3FFF
 
 
@@ -87,13 +87,13 @@ def _self_check():
         got = struct.calcsize(fmt)
         if got != want:
             raise SystemExit(
-                f"内部错误: {name} 尺寸 {got} 字节，内核期望 {want} 字节。"
-                f"请勿运行，否则 ioctl 会越界写内存。")
+                f"Internal error: {name} size {got} bytes, kernel expects {want} bytes."
+                f"Do not run, or ioctl will write out of memory bounds.")
     n_fields = len(struct.unpack(BUF_STRUCT, b"\x00" * struct.calcsize(BUF_STRUCT)))
     if n_fields != len(BUF_FIELDS):
         raise SystemExit(
-            f"内部错误: BUF_STRUCT 解出 {n_fields} 个字段，"
-            f"BUF_FIELDS 列了 {len(BUF_FIELDS)} 个。")
+            f"Internal error: BUF_STRUCT unpacked {n_fields} fields, "
+            f"BUF_FIELDS listed {len(BUF_FIELDS)}.")
 
 
 _self_check()
@@ -126,7 +126,7 @@ def unpack_buffer(raw):
     return dict(zip(BUF_FIELDS, struct.unpack(BUF_STRUCT, raw)))
 
 
-# ---------------------------------------------------------------- 控制项
+# ---------------------------------------------------------------- Controls
 
 def query_ctrl(fd, cid):
     buf = bytearray(struct.pack(QUERYCTRL_STRUCT, cid, 0, b"",
@@ -158,15 +158,15 @@ def set_ctrl(fd, cid, value):
     try:
         fcntl.ioctl(fd, VIDIOC_S_CTRL, buf)
     except OSError as exc:
-        print(f"  设置 0x{cid:08X}={value} 失败: {err_name(exc)}")
+        print(f"  Setting 0x{cid:08X}={value} failed: {err_name(exc)}")
         return False
     got, _ = get_ctrl(fd, cid)
-    print(f"  设置 0x{cid:08X}={value} 成功（回读 {got}）")
+    print(f"  Setting 0x{cid:08X}={value} succeeded (read back {got})")
     return True
 
 
 def list_all_controls(fd):
-    print("=== 驱动暴露的全部控制项（NEXT_CTRL 枚举）===")
+    print("=== All Controls Exposed by Driver (NEXT_CTRL Enumeration) ===")
     qid = CTRL_FLAG_NEXT_CTRL
     found = 0
     seen = set()
@@ -186,20 +186,20 @@ def list_all_controls(fd):
             flags.append("inactive")
         if info["flags"] & CTRL_FLAG_VOLATILE:
             flags.append("volatile")
-        shown = value if get_err is None else f"读取失败({get_err})"
+        shown = value if get_err is None else f"Read failed ({get_err})"
         ctype = CTRL_TYPE_NAMES.get(info["type"], str(info["type"]))
         print(f"  0x{info['id']:08X}  {info['name'][:28]:<28} "
-              f"当前={str(shown):<18} 范围={info['min']}..{info['max']}"
-              f" 步进={info['step']} 默认={info['default']}"
-              f" 类型={ctype} flags=0x{info['flags']:04X}"
+              f"Current={str(shown):<18} Range={info['min']}..{info['max']}"
+              f" Step={info['step']} Default={info['default']}"
+              f" Type={ctype} flags=0x{info['flags']:04X}"
               f"{('  [' + ','.join(flags) + ']') if flags else ''}")
         qid = info["id"] | CTRL_FLAG_NEXT_CTRL
     if found == 0:
-        print("  （驱动没有暴露任何控制项）")
+        print("  (Driver did not expose any controls)")
     print()
 
 
-# ---------------------------------------------------------------- 格式/帧率
+# ---------------------------------------------------------------- Formats / FPS
 
 def set_format(fd, width, height, fourcc):
     buf = bytearray(struct.pack(FMT_STRUCT, BUF_TYPE_VIDEO_CAPTURE,
@@ -231,7 +231,7 @@ def set_parm(fd, fps):
     return can_set, current, get_parm(fd), None
 
 
-# ---------------------------------------------------------------- 取流
+# ---------------------------------------------------------------- Streaming
 
 def measure(fd, size_image, n_frames, n_buffers=4, warmup=15):
     req = bytearray(struct.pack(REQBUFS_STRUCT, n_buffers,
@@ -239,7 +239,7 @@ def measure(fd, size_image, n_frames, n_buffers=4, warmup=15):
     fcntl.ioctl(fd, VIDIOC_REQBUFS, req)
     n_alloc = struct.unpack(REQBUFS_STRUCT, req)[0]
     if n_alloc < 2:
-        raise RuntimeError(f"驱动只分配了 {n_alloc} 个缓冲，无法测速")
+        raise RuntimeError(f"Driver only allocated {n_alloc} buffers, cannot benchmark")
 
     maps = []
     for index in range(n_alloc):
@@ -295,22 +295,22 @@ def measure(fd, size_image, n_frames, n_buffers=4, warmup=15):
 def show(stats):
     wall, drv, lat = stats["wall"], stats["drv"], stats["lat"]
     if not wall:
-        print("  没有采到有效帧。")
+        print("  No valid frames captured.")
         return
-    print(f"  缓冲区数量       : {stats['n_buffers']}")
-    print(f"  墙上时间帧率     : {1000.0 / statistics.mean(wall):6.2f} Hz"
-          f"   间隔中位 {statistics.median(wall):6.2f} ms"
-          f"   (最小 {min(wall):.2f} / 最大 {max(wall):.2f})")
-    print(f"  驱动时间戳帧率   : {1000.0 / statistics.mean(drv):6.2f} Hz"
-          f"   间隔中位 {statistics.median(drv):6.2f} ms"
-          f"   (最小 {min(drv):.2f} / 最大 {max(drv):.2f})")
-    print(f"  取帧延迟(中位)   : {statistics.median(lat):6.2f} ms")
-    print(f"  数据量偏小的帧   : {stats['n_short']}")
-    print(f"  select 超时次数  : {stats['n_timeout']}")
+    print(f"  Buffer count        : {stats['n_buffers']}")
+    print(f"  Wall-clock FPS      : {1000.0 / statistics.mean(wall):6.2f} Hz"
+          f"   median interval {statistics.median(wall):6.2f} ms"
+          f"   (min {min(wall):.2f} / max {max(wall):.2f})")
+    print(f"  Driver timestamp FPS: {1000.0 / statistics.mean(drv):6.2f} Hz"
+          f"   median interval {statistics.median(drv):6.2f} ms"
+          f"   (min {min(drv):.2f} / max {max(drv):.2f})")
+    print(f"  Frame latency (med) : {statistics.median(lat):6.2f} ms")
+    print(f"  Undersized frames   : {stats['n_short']}")
+    print(f"  select timeouts     : {stats['n_timeout']}")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="V4L2 原始取流测速")
+    ap = argparse.ArgumentParser(description="V4L2 raw stream benchmark")
     ap.add_argument("device", nargs="?", default="/dev/video0")
     ap.add_argument("--size", default="640x480")
     ap.add_argument("--format", default="YUYV")
@@ -322,24 +322,24 @@ def main():
     args = ap.parse_args()
 
     if not os.path.exists(args.device):
-        print(f"设备不存在: {args.device}")
+        print(f"Device does not exist: {args.device}")
         return 1
     try:
         fd = os.open(args.device, os.O_RDWR)
     except OSError as exc:
-        print(f"打开失败: {exc.strerror}（是否被其他进程占用？）")
+        print(f"Open failed: {exc.strerror} (is it in use by another process?)")
         return 1
 
     try:
-        print(f"设备: {args.device}\n")
+        print(f"Device: {args.device}\n")
         list_all_controls(fd)
 
         for item in args.set:
             if "=" not in item:
-                print(f"忽略无法解析的 --set 参数: {item}\n")
+                print(f"Ignoring unparseable --set parameter: {item}\n")
                 continue
             key, val = item.split("=", 1)
-            print(f"设置 {key}:")
+            print(f"Setting {key}:")
             set_ctrl(fd, int(key, 0), int(val, 0))
             print()
 
@@ -348,25 +348,25 @@ def main():
 
         width, height = (int(x) for x in args.size.lower().split("x"))
         fmt = set_format(fd, width, height, fourcc_from_str(args.format))
-        print("=== S_FMT 结果 ===")
-        print(f"  实得 {fmt['fourcc']} {fmt['width']}x{fmt['height']}"
-              f"  每帧 {fmt['sizeimage']} 字节\n")
+        print("=== S_FMT Result ===")
+        print(f"  Obtained {fmt['fourcc']} {fmt['width']}x{fmt['height']}"
+              f"  {fmt['sizeimage']} bytes/frame\n")
 
         can_set, before, after, parm_err = set_parm(fd, args.fps)
-        print(f"=== S_PARM 结果（请求 {args.fps} fps）===")
-        print(f"  驱动声明可设帧率 : {can_set}")
+        print(f"=== S_PARM Result (Requested {args.fps} fps) ===")
+        print(f"  Driver supports frame rate setting : {can_set}")
         bn, bd = before["numerator"], before["denominator"]
-        print(f"  设置前的间隔     : {bn}/{bd}"
+        print(f"  Interval before setting            : {bn}/{bd}"
               f"  → {(bd / bn) if bn else 0:g} fps")
         if parm_err:
-            print(f"  S_PARM 失败      : {parm_err}")
+            print(f"  S_PARM failed                      : {parm_err}")
         else:
             an, ad = after["numerator"], after["denominator"]
-            print(f"  设置后的间隔     : {an}/{ad}"
+            print(f"  Interval after setting             : {an}/{ad}"
                   f"  → {(ad / an) if an else 0:g} fps")
         print()
 
-        print(f"=== 取流测速（{args.frames} 帧）===")
+        print(f"=== Streaming Benchmark ({args.frames} frames) ===")
         show(measure(fd, fmt["sizeimage"], args.frames,
                      n_buffers=args.buffers))
     finally:
